@@ -8,6 +8,7 @@ import uuid
 
 logger = logging.getLogger(__name__)
 
+
 class EmbeddingService:
     def __init__(self):
         # Initialize ChromaDB client
