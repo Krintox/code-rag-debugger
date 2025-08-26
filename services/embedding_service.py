@@ -1,6 +1,7 @@
 import chromadb
 from chromadb.config import Settings
 from chromadb.utils import embedding_functions
+import numpy as np
 from typing import List, Dict, Any
 from config import settings
 import logging
@@ -8,16 +9,15 @@ import uuid
 
 logger = logging.getLogger(__name__)
 
-
 class EmbeddingService:
     def __init__(self):
-        # Initialize ChromaDB client
+        # Initialize ChromaDB client with telemetry disabled
         self.chroma_client = chromadb.PersistentClient(
             path=settings.CHROMA_DB_PATH,
             settings=Settings(anonymized_telemetry=False)
         )
         
-        # Use ChromaDB's default embedding function
+        # Use Chroma's default embedding function
         self.embedding_function = embedding_functions.DefaultEmbeddingFunction()
 
     def create_collection(self, collection_name: str):
@@ -42,7 +42,7 @@ class EmbeddingService:
             metadatas = [doc["metadata"] for doc in documents]
             ids = [str(uuid.uuid4()) for _ in documents]
             
-            # Add to collection (ChromaDB will handle embeddings automatically)
+            # Add to collection - Chroma will handle embeddings automatically
             collection.add(
                 documents=texts,
                 metadatas=metadatas,
@@ -72,7 +72,7 @@ class EmbeddingService:
                 formatted_results.append({
                     "content": results["documents"][0][i],
                     "metadata": results["metadatas"][0][i],
-                    "distance": results["distances"][0][i] if results["distances"] else 0
+                    "distance": results["distances"][0][i]
                 })
             
             return formatted_results

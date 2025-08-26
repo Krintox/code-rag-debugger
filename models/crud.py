@@ -1,7 +1,7 @@
 from sqlalchemy.orm import Session
 from .database import Base
 from typing import Type, TypeVar, List, Optional
-from . import models
+import models  # Import models directly
 
 ModelType = TypeVar("ModelType", bound=Base)
 
@@ -16,7 +16,7 @@ class CRUDBase:
         return db.query(self.model).offset(skip).limit(limit).all()
 
     def create(self, db: Session, obj_in) -> ModelType:
-        obj_in_data = obj_in.dict()
+        obj_in_data = obj_in.model_dump()
         db_obj = self.model(**obj_in_data)
         db.add(db_obj)
         db.commit()
@@ -24,7 +24,7 @@ class CRUDBase:
         return db_obj
 
     def update(self, db: Session, db_obj: ModelType, obj_in) -> ModelType:
-        obj_data = obj_in.dict(exclude_unset=True)
+        obj_data = obj_in.model_dump(exclude_unset=True)
         for field in obj_data:
             setattr(db_obj, field, obj_data[field])
         db.add(db_obj)
@@ -59,6 +59,21 @@ class CRUDCommit(CRUDBase):
         return db.query(models.Commit).filter(
             models.Commit.project_id == project_id
         ).offset(skip).limit(limit).all()
+
+    def create_commit(self, db: Session, commit_data: dict) -> models.Commit:
+        """Create a commit with proper data handling"""
+        db_commit = models.Commit(
+            hash=commit_data["hash"],
+            author=commit_data["author"],
+            message=commit_data["message"],
+            timestamp=commit_data["timestamp"],
+            files_changed=commit_data["files_changed"],  # This should be a list
+            project_id=commit_data["project_id"]
+        )
+        db.add(db_commit)
+        db.commit()
+        db.refresh(db_commit)
+        return db_commit
 
 class CRUDFeedback(CRUDBase):
     def __init__(self):

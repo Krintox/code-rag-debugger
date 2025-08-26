@@ -42,8 +42,22 @@ def create_project(project: schemas.ProjectCreate, db: Session = Depends(get_db)
     # Create project in database
     db_project = crud.project.create(db, obj_in=project)
     
-    # Add commits to database
+    # Add commits to database using the fixed method
     for commit_data in commits:
+        # Ensure files_changed is a proper list
+        if isinstance(commit_data["files_changed"], str):
+            # Handle the case where it might still be a string representation
+            try:
+                # Try to parse the string as a list
+                if commit_data["files_changed"].startswith('{') and commit_data["files_changed"].endswith('}'):
+                    # Remove braces and split by commas
+                    files_str = commit_data["files_changed"][1:-1]
+                    commit_data["files_changed"] = [f.strip() for f in files_str.split(',') if f.strip()]
+                else:
+                    commit_data["files_changed"] = [commit_data["files_changed"]]
+            except:
+                commit_data["files_changed"] = []
+        
         commit_create = schemas.CommitCreate(
             **commit_data,
             project_id=db_project.id
@@ -117,9 +131,6 @@ def refresh_project(project_id: int, db: Session = Depends(get_db)):
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=f"Failed to get commit history: {str(e)}"
         )
-    
-    # Update commits in database (simplified - in production, you'd need to handle updates)
-    # For now, we'll just reindex
     
     # Reindex commits in vector database
     try:

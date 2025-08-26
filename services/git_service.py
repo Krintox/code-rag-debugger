@@ -44,22 +44,32 @@ class GitService:
             commits = []
             
             for commit in repo.iter_commits(max_count=max_commits):
-                # Get files changed in this commit
+                # Get files changed in this commit as a proper list
                 files_changed = []
                 try:
-                    # Try to get the diff for this commit
-                    diff = commit.diff(commit.parents[0] if commit.parents else git.NULL_TREE, create_patch=False)
-                    files_changed = [d.a_path for d in diff]
-                except (IndexError, AttributeError):
-                    # If no parents (initial commit) or other issues
-                    files_changed = []
+                    # Get the diff for this commit and extract file paths
+                    if commit.parents:
+                        # Compare with parent commit
+                        parent = commit.parents[0]
+                        diff = parent.diff(commit)
+                        files_changed = [d.a_path for d in diff if d.a_path]
+                    else:
+                        # Initial commit - get all files in the tree
+                        files_changed = [item.path for item in commit.tree.traverse() if isinstance(item, git.Blob)]
+                except (IndexError, AttributeError, Exception) as e:
+                    logger.warning(f"Could not get files changed for commit {commit.hexsha}: {e}")
+                    # Fallback: try to get files from stats
+                    try:
+                        files_changed = list(commit.stats.files.keys())
+                    except:
+                        files_changed = []
                 
                 commits.append({
                     "hash": commit.hexsha,
                     "author": str(commit.author),
                     "message": commit.message.strip(),
                     "timestamp": datetime.fromtimestamp(commit.committed_date),
-                    "files_changed": files_changed
+                    "files_changed": files_changed  # This should be a list, not a string
                 })
                 
             return commits
