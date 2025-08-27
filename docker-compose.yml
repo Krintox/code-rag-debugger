@@ -1,0 +1,55 @@
+version: '3.8'
+services:
+  postgres:
+    image: postgres:15
+    restart: always
+    environment:
+      POSTGRES_DB: code_tracker
+      POSTGRES_USER: user
+      POSTGRES_PASSWORD: password
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+
+  ollama:
+    image: ollama/ollama:latest
+    restart: always
+    ports:
+      - "11434:11434"
+    volumes:
+      - ollama-data:/root/.ollama
+    environment:
+      OLLAMA_HOST: 0.0.0.0
+
+  chroma:
+    image: chromadb/chroma
+    restart: always
+    ports:
+      - "8000:8000"
+    volumes:
+      - chroma-data:/chroma
+
+  backend:
+    build: ./backend
+    restart: always
+    environment:
+      DATABASE_URL: postgresql://user:password@postgres:5432/code_tracker
+      OLLAMA_BASE_URL: http://ollama:11434
+      OLLAMA_MODEL: gemma:2b
+      REPOSITORY_BASE_PATH: /repositories
+      CHROMA_DB_PATH: /chroma
+      EMBEDDING_MODEL: all-MiniLM-L6-v2
+    depends_on:
+      - postgres
+      - ollama
+      - chroma
+    ports:
+      - "3000:3000"
+    volumes:
+      - ./repositories:/repositories
+
+volumes:
+  postgres-data:
+  ollama-data:
+  chroma-data:
