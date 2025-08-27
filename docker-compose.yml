@@ -19,7 +19,7 @@ services:
       - chroma-data:/chroma
 
   backend:
-    build: ./backend
+    build: ./
     restart: always
     env_file:
       - .env
