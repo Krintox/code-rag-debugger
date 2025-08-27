@@ -1,8 +1,7 @@
-from pydantic import BaseModel
+from pydantic import BaseModel, HttpUrl
 from typing import List, Optional, Dict, Any
 from datetime import datetime
 
-# Remove the import from . import crud since it causes circular import
 # Project schemas
 class ProjectBase(BaseModel):
     name: str
@@ -14,8 +13,8 @@ class ProjectCreate(ProjectBase):
 
 class Project(ProjectBase):
     id: int
-    created_at: datetime
-    updated_at: datetime
+    created_at: Optional[datetime] = None
+    updated_at: Optional[datetime] = None
     
     class Config:
         from_attributes = True
@@ -25,7 +24,7 @@ class CommitBase(BaseModel):
     hash: str
     author: str
     message: str
-    timestamp: datetime
+    timestamp: Optional[datetime] = None
     files_changed: List[str]
 
 class CommitCreate(CommitBase):
@@ -83,7 +82,7 @@ class FeedbackCreate(FeedbackBase):
 
 class Feedback(FeedbackBase):
     id: int
-    created_at: datetime
+    created_at: Optional[datetime] = None
     
     class Config:
         from_attributes = True
