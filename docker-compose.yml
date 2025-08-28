@@ -14,7 +14,7 @@ services:
     image: chromadb/chroma:latest
     restart: always
     ports:
-      - "8000:8000"
+      - "8001:8000"
     volumes:
       - chroma-data:/chroma
 
@@ -27,7 +27,7 @@ services:
       - ollama
       - chroma
     ports:
-      - "3000:3000"
+      - "8000:8000"
     volumes:
       - ./repositories:/repositories
 

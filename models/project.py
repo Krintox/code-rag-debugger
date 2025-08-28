@@ -1,17 +1,16 @@
-from sqlalchemy import Column, Integer, String, DateTime
 from datetime import datetime
-from .database import Base
-from sqlalchemy.orm import relationship
+from pydantic import BaseModel
+from typing import Optional, List
+from .commit import Commit
 
-commits = relationship("Commit", back_populates="project")
+class Project(BaseModel):
+    id: Optional[int] = None
+    name: str
+    git_url: str
+    description: Optional[str] = None
+    created_at: Optional[datetime] = None
+    updated_at: Optional[datetime] = None
+    commits: List[Commit] = []
 
-
-class Project(Base):
-    __tablename__ = "projects"
-
-    id = Column(Integer, primary_key=True, index=True)
-    name = Column(String, unique=True, index=True, nullable=False)
-    git_url = Column(String, unique=True, nullable=False)
-    description = Column(String, nullable=True)
-    created_at = Column(DateTime, default=datetime.utcnow)
-    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    class Config:
+        from_attributes = True

@@ -1,0 +1,1954 @@
+
+--- File: C:\Shashank\SaaS\code-rag-debugger\backend\.env ---
+
+DATABASE_URL=
+SUPABASE_URL=
+SUPABASE_KEY=
+SECURITY_KEY=
+OLLAMA_BASE_URL=http://localhost:11434
+OLLAMA_MODEL=gemma:2b
+REPOSITORY_BASE_PATH=./repositories
+CHROMA_DB_PATH=./chroma_db
+EMBEDDING_MODEL=all-MiniLM-L6-v2
+BACKEND_CORS_ORIGINS=["http://localhost:3000", "http://localhost:8000"]
+
+
+--- File: C:\Shashank\SaaS\code-rag-debugger\backend\.gitignore ---
+
+# See https://help.github.com/articles/ignoring-files/ for more about ignoring files.
+
+# dependencies
+/node_modules
+/.pnp
+.pnp.js
+
+# testing
+/coverage
+
+# production
+/build
+
+# misc
+.DS_Store
+.env
+.env.local
+.env.development.local
+.env.test.local
+.env.production.local
+
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+
+
+--- File: C:\Shashank\SaaS\code-rag-debugger\backend\config.py ---
+
+import os
+from pydantic_settings import BaseSettings
+from typing import List, Optional
+from dotenv import load_dotenv
+
+load_dotenv()
+
+class Settings(BaseSettings):
+    PROJECT_NAME: str = "RodeCeview"
+    
+    # Database Configuration
+    DATABASE_URL: str = os.getenv("DATABASE_URL", "")
+    
+    # Supabase Configuration
+    SUPABASE_URL: str = os.getenv("SUPABASE_URL", "")
+    SUPABASE_KEY: str = os.getenv("SUPABASE_KEY", "")
+    
+    # Vector Database
+    CHROMA_DB_PATH: str = os.getenv("CHROMA_DB_PATH", "./chroma_db")
+    EMBEDDING_MODEL: str = os.getenv("EMBEDDING_MODEL", "all-MiniLM-L6-v2")
+    
+    # Ollama Configuration
+    OLLAMA_BASE_URL: str = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434")
+    OLLAMA_MODEL: str = os.getenv("OLLAMA_MODEL", "gemma:2b")
+    
+    # Git Configuration
+    MAX_COMMIT_HISTORY: int = int(os.getenv("MAX_COMMIT_HISTORY", 1000))
+    REPOSITORY_BASE_PATH: str = os.getenv("REPOSITORY_BASE_PATH", "./repositories")
+    
+    # Security
+    SECRET_KEY: str = os.getenv("SECRET_KEY", "your-secret-key-here")
+    ALGORITHM: str = "HS256"
+    ACCESS_TOKEN_EXPIRE_MINUTES: int = 60 * 24 * 7  # 7 days
+    
+    # CORS
+    BACKEND_CORS_ORIGINS: List[str] = ["http://localhost:3000", "http://localhost:8000"]
+    
+    class Config:
+        case_sensitive = True
+
+settings = Settings()
+
+
+--- File: C:\Shashank\SaaS\code-rag-debugger\backend\docker-compose.yml ---
+
+version: '3.8'
+services:
+  ollama:
+    image: ollama/ollama:latest
+    restart: always
+    ports:
+      - "11434:11434"
+    volumes:
+      - ollama-data:/root/.ollama
+    environment:
+      OLLAMA_HOST: 0.0.0.0
+
+  chroma:
+    image: chromadb/chroma:latest
+    restart: always
+    ports:
+      - "8000:8000"
+    volumes:
+      - chroma-data:/chroma
+
+  backend:
+    build: ./
+    restart: always
+    env_file:
+      - .env
+    depends_on:
+      - ollama
+      - chroma
+    ports:
+      - "3000:3000"
+    volumes:
+      - ./repositories:/repositories
+
+volumes:
+  ollama-data:
+  chroma-data:
+
+
+
+--- File: C:\Shashank\SaaS\code-rag-debugger\backend\Dockerfile ---
+
+FROM python:3.11-slim
+
+# Install system dependencies (git + build essentials)
+RUN apt-get update && apt-get install -y \
+    git \
+    build-essential \
+    && rm -rf /var/lib/apt/lists/*
+
+# Set working directory
+WORKDIR /app
+
+# Install Python dependencies
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
+
+# Copy app source code
+COPY . .
+
+# Expose port
+EXPOSE 3000
+
+# Start the app with uvicorn
+CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "3000"]
+
+
+
+--- File: C:\Shashank\SaaS\code-rag-debugger\backend\main.py ---
+
+from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
+from contextlib import asynccontextmanager
+import logging
+
+from config import settings
+import models
+from routers import projects, debug, history
+
+# Set up logging
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    logger.info("Starting up application...")
+    yield
+    logger.info("Shutting down...")
+
+app = FastAPI(
+    title=settings.PROJECT_NAME,
+    description="Code Evolution Tracker & Debugger with RAG",
+    version="1.0.0",
+    lifespan=lifespan
+)
+
+# Configure CORS - FIXED CONFIGURATION
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["http://localhost:3000"],  # Your React frontend URL
+    allow_credentials=True,
+    allow_methods=["*"],  # Allow all methods including OPTIONS
+    allow_headers=["*"],  # Allow all headers
+)
+
+# Include routers
+app.include_router(projects.router)
+app.include_router(debug.router)
+app.include_router(history.router)
+
+@app.get("/")
+async def root():
+    return {"message": "Code Evolution Tracker & Debugger API"}
+
+@app.get("/health")
+async def health_check():
+    return {"status": "healthy"}
+
+if __name__ == "__main__":
+    import uvicorn
+    uvicorn.run(app, host="0.0.0.0", port=8000)
+
+
+--- File: C:\Shashank\SaaS\code-rag-debugger\backend\output.py ---
+
+import os
+
+ALLOWED_FOLDERS = {"migrations", "models", "routers", "services", "utils"}
+EXCLUDED_FOLDERS = {"__pycache__", "venv", "repositories"}
+
+def collect_contents(root_folder, output_file):
+    with open(output_file, "w", encoding="utf-8") as outfile:
+        for foldername, subfolders, filenames in os.walk(root_folder):
+            # Remove excluded folders so os.walk won't enter them
+            subfolders[:] = [sf for sf in subfolders if sf not in EXCLUDED_FOLDERS]
+
+            # relative path from root
+            rel_path = os.path.relpath(foldername, root_folder)
+
+            for filename in filenames:
+                # Skip the output file itself if inside root folder
+                if filename == output_file:
+                    continue
+
+                file_path = os.path.join(foldername, filename)
+
+                # Check if file is in root or in allowed folders
+                if (
+                    rel_path == "."  # file is in root folder
+                    or rel_path.split(os.sep)[0] in ALLOWED_FOLDERS
+                ):
+                    try:
+                        with open(file_path, "r", encoding="utf-8") as infile:
+                            outfile.write(f"\n--- File: {file_path} ---\n\n")
+                            outfile.write(infile.read())
+                            outfile.write("\n\n")
+                    except Exception as e:
+                        outfile.write(f"\n--- Could not read {file_path}: {e} ---\n\n")
+
+if __name__ == "__main__":
+    root_folder = os.getcwd()  # current directory
+    output_file = "all_contents.txt"
+    collect_contents(root_folder, output_file)
+    print(f"✅ All contents written to {output_file}")
+
+
+
+--- File: C:\Shashank\SaaS\code-rag-debugger\backend\requirements.txt ---
+
+fastapi==0.104.1
+uvicorn==0.24.0
+python-multipart==0.0.6
+sqlalchemy==2.0.23
+alembic==1.12.1
+psycopg2-binary==2.9.9
+chromadb==0.4.15
+sentence-transformers==2.2.2
+requests==2.31.0
+gitpython==3.1.37
+python-jose==3.3.0
+passlib==1.7.4
+python-dotenv==1.0.0
+pydantic==2.5.0
+pydantic-settings==2.1.0
+aiofiles==23.2.1
+watchdog==3.0.0
+huggingface-hub==0.16.4  # Add this specific version
+supabase
+
+
+--- File: C:\Shashank\SaaS\code-rag-debugger\backend\__init__.py ---
+
+
+
+
+--- File: C:\Shashank\SaaS\code-rag-debugger\backend\migrations\fix_null_dates.py ---
+
+# migrations/fix_null_dates.py
+from sqlalchemy import create_engine, text
+from sqlalchemy.orm import sessionmaker
+from config import settings
+
+def fix_null_dates():
+    engine = create_engine(settings.DATABASE_URL)
+    Session = sessionmaker(bind=engine)
+    session = Session()
+    
+    try:
+        # Fix projects with NULL created_at or updated_at
+        session.execute(text("""
+            UPDATE projects 
+            SET created_at = CURRENT_TIMESTAMP 
+            WHERE created_at IS NULL
+        """))
+        
+        session.execute(text("""
+            UPDATE projects 
+            SET updated_at = CURRENT_TIMESTAMP 
+            WHERE updated_at IS NULL
+        """))
+        
+        # Fix commits with NULL timestamp
+        session.execute(text("""
+            UPDATE commits 
+            SET timestamp = CURRENT_TIMESTAMP 
+            WHERE timestamp IS NULL
+        """))
+        
+        # Fix feedback with NULL created_at
+        session.execute(text("""
+            UPDATE feedback 
+            SET created_at = CURRENT_TIMESTAMP 
+            WHERE created_at IS NULL
+        """))
+        
+        session.commit()
+        print("Successfully fixed NULL date values")
+        
+    except Exception as e:
+        session.rollback()
+        print(f"Error fixing NULL dates: {e}")
+    finally:
+        session.close()
+
+if __name__ == "__main__":
+    fix_null_dates()
+
+
+--- File: C:\Shashank\SaaS\code-rag-debugger\backend\migrations\__init__.py ---
+
+
+
+
+--- File: C:\Shashank\SaaS\code-rag-debugger\backend\models\commit.py ---
+
+from datetime import datetime
+from pydantic import BaseModel
+from typing import List, Optional
+
+class Commit(BaseModel):
+    id: Optional[int] = None
+    hash: str
+    author: str
+    message: str
+    timestamp: datetime
+    files_changed: List[str]
+    project_id: int
+
+    class Config:
+        from_attributes = True
+
+
+--- File: C:\Shashank\SaaS\code-rag-debugger\backend\models\crud.py ---
+
+from typing import Type, TypeVar, List, Optional, Dict, Any
+from models.database import get_db
+from supabase import Client
+import logging
+
+logger = logging.getLogger(__name__)
+
+ModelType = TypeVar("ModelType")
+
+class CRUDBase:
+    def __init__(self, table_name: str):
+        self.table_name = table_name
+
+    def get(self, id: int) -> Optional[Dict[str, Any]]:
+        try:
+            supabase = get_db()
+            result = supabase.table(self.table_name).select("*").eq("id", id).execute()
+            return result.data[0] if result.data else None
+        except Exception as e:
+            logger.error(f"Error getting record from {self.table_name}: {e}")
+            return None
+
+    def get_multi(self, skip: int = 0, limit: int = 100) -> List[Dict[str, Any]]:
+        try:
+            supabase = get_db()
+            result = supabase.table(self.table_name).select("*").range(skip, skip + limit - 1).execute()
+            return result.data
+        except Exception as e:
+            logger.error(f"Error getting multiple records from {self.table_name}: {e}")
+            return []
+
+    def create(self, data: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+        try:
+            supabase = get_db()
+            result = supabase.table(self.table_name).insert(data).execute()
+            return result.data[0] if result.data else None
+        except Exception as e:
+            logger.error(f"Error creating record in {self.table_name}: {e}")
+            return None
+
+    def update(self, id: int, data: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+        try:
+            supabase = get_db()
+            result = supabase.table(self.table_name).update(data).eq("id", id).execute()
+            return result.data[0] if result.data else None
+        except Exception as e:
+            logger.error(f"Error updating record in {self.table_name}: {e}")
+            return None
+
+    def remove(self, id: int) -> Optional[Dict[str, Any]]:
+        try:
+            supabase = get_db()
+            result = supabase.table(self.table_name).delete().eq("id", id).execute()
+            return result.data[0] if result.data else None
+        except Exception as e:
+            logger.error(f"Error deleting record from {self.table_name}: {e}")
+            return None
+
+class CRUDProject(CRUDBase):
+    def __init__(self):
+        super().__init__("projects")
+
+    def get_by_name(self, name: str) -> Optional[Dict[str, Any]]:
+        try:
+            supabase = get_db()
+            result = supabase.table("projects").select("*").eq("name", name).execute()
+            return result.data[0] if result.data else None
+        except Exception as e:
+            logger.error(f"Error getting project by name: {e}")
+            return None
+
+class CRUDCommit(CRUDBase):
+    def __init__(self):
+        super().__init__("commits")
+
+    def get_by_hash(self, hash: str, project_id: int) -> Optional[Dict[str, Any]]:
+        try:
+            supabase = get_db()
+            result = supabase.table("commits").select("*").eq("hash", hash).eq("project_id", project_id).execute()
+            return result.data[0] if result.data else None
+        except Exception as e:
+            logger.error(f"Error getting commit by hash: {e}")
+            return None
+
+    def get_by_project(self, project_id: int, skip: int = 0, limit: int = 100) -> List[Dict[str, Any]]:
+        try:
+            supabase = get_db()
+            result = supabase.table("commits").select("*").eq("project_id", project_id).range(skip, skip + limit - 1).execute()
+            return result.data
+        except Exception as e:
+            logger.error(f"Error getting commits by project: {e}")
+            return []
+
+    def create_commit(self, commit_data: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+        try:
+            supabase = get_db()
+            result = supabase.table("commits").insert(commit_data).execute()
+            return result.data[0] if result.data else None
+        except Exception as e:
+            logger.error(f"Error creating commit: {e}")
+            return None
+
+class CRUDFeedback(CRUDBase):
+    def __init__(self):
+        super().__init__("feedback")
+
+    def get_by_debug_query(self, debug_query_id: int) -> List[Dict[str, Any]]:
+        try:
+            supabase = get_db()
+            result = supabase.table("feedback").select("*").eq("debug_query_id", debug_query_id).execute()
+            return result.data
+        except Exception as e:
+            logger.error(f"Error getting feedback by debug query: {e}")
+            return []
+
+project = CRUDProject()
+commit = CRUDCommit()
+feedback = CRUDFeedback()
+
+
+--- File: C:\Shashank\SaaS\code-rag-debugger\backend\models\database.py ---
+
+from supabase import create_client, Client
+from config import settings
+import logging
+
+logger = logging.getLogger(__name__)
+
+# Initialize Supabase client only if URL and KEY are provided
+supabase: Client = None
+
+def initialize_supabase():
+    global supabase
+    if settings.SUPABASE_URL and settings.SUPABASE_KEY:
+        try:
+            # Validate URL format
+            if not settings.SUPABASE_URL.startswith(('http://', 'https://')):
+                logger.error(f"Invalid Supabase URL format: {settings.SUPABASE_URL}")
+                return False
+            
+            supabase = create_client(settings.SUPABASE_URL, settings.SUPABASE_KEY)
+            logger.info("Supabase client initialized successfully")
+            return True
+        except Exception as e:
+            logger.error(f"Failed to initialize Supabase client: {e}")
+            supabase = None
+            return False
+    else:
+        logger.warning("Supabase URL or KEY not configured. Supabase functionality will be disabled.")
+        return False
+
+# Initialize on import
+supabase_initialized = initialize_supabase()
+
+def get_db():
+    """
+    Returns Supabase client for queries.
+    """
+    if supabase is None:
+        raise Exception("Supabase client not initialized. Check your SUPABASE_URL and SUPABASE_KEY configuration.")
+    return supabase
+
+
+--- File: C:\Shashank\SaaS\code-rag-debugger\backend\models\feedback.py ---
+
+from datetime import datetime
+from pydantic import BaseModel
+from typing import Optional
+
+class Feedback(BaseModel):
+    id: Optional[int] = None
+    debug_query_id: int
+    helpful: bool = False
+    comments: Optional[str] = None
+    created_at: Optional[datetime] = None
+
+    class Config:
+        from_attributes = True
+
+
+--- File: C:\Shashank\SaaS\code-rag-debugger\backend\models\models.py ---
+
+from pydantic import BaseModel
+from typing import List, Optional
+from datetime import datetime
+
+class Project(BaseModel):
+    id: Optional[int] = None
+    name: str
+    git_url: str
+    description: Optional[str] = None
+    created_at: Optional[datetime] = None
+    updated_at: Optional[datetime] = None
+
+    class Config:
+        from_attributes = True
+
+class Commit(BaseModel):
+    id: Optional[int] = None
+    hash: str
+    author: str
+    message: str
+    timestamp: datetime
+    files_changed: List[str]
+    project_id: int
+
+    class Config:
+        from_attributes = True
+
+class Feedback(BaseModel):
+    id: Optional[int] = None
+    debug_query_id: int
+    helpful: bool
+    comments: Optional[str] = None
+    created_at: Optional[datetime] = None
+
+    class Config:
+        from_attributes = True
+
+
+--- File: C:\Shashank\SaaS\code-rag-debugger\backend\models\project.py ---
+
+from datetime import datetime
+from pydantic import BaseModel
+from typing import Optional, List
+from .commit import Commit
+
+class Project(BaseModel):
+    id: Optional[int] = None
+    name: str
+    git_url: str
+    description: Optional[str] = None
+    created_at: Optional[datetime] = None
+    updated_at: Optional[datetime] = None
+    commits: List[Commit] = []
+
+    class Config:
+        from_attributes = True
+
+
+--- File: C:\Shashank\SaaS\code-rag-debugger\backend\models\schemas.py ---
+
+from pydantic import BaseModel, HttpUrl
+from typing import List, Optional, Dict, Any
+from datetime import datetime
+
+# Project schemas
+class ProjectBase(BaseModel):
+    name: str
+    git_url: str
+    description: Optional[str] = None
+
+class ProjectCreate(ProjectBase):
+    pass
+
+class Project(ProjectBase):
+    id: int
+    created_at: Optional[datetime] = None
+    updated_at: Optional[datetime] = None
+    
+    class Config:
+        from_attributes = True
+
+# Commit schemas
+class CommitBase(BaseModel):
+    hash: str
+    author: str
+    message: str
+    timestamp: Optional[datetime] = None
+    files_changed: List[str]
+
+class CommitCreate(CommitBase):
+    project_id: int
+
+class Commit(CommitBase):
+    id: int
+    project_id: int
+    
+    class Config:
+        from_attributes = True
+
+# Debug query schemas
+class DebugQuery(BaseModel):
+    error_message: str
+    code_snippet: Optional[str] = None
+    file_path: Optional[str] = None
+    additional_context: Optional[str] = None
+    project_id: int
+
+class DebugContext(BaseModel):
+    commit: Optional[Commit] = None
+    similar_errors: List[Any] = []
+    documentation: List[str] = []
+    code_suggestions: List[str] = []
+
+class DebugResponse(BaseModel):
+    solution: str
+    context: DebugContext
+    confidence: float
+
+# RAG schemas
+class RAGQuery(BaseModel):
+    query: str
+    project_id: int
+    max_results: int = 5
+
+class RAGResult(BaseModel):
+    content: str
+    source: str
+    similarity: float
+
+class RAGResponse(BaseModel):
+    results: List[RAGResult]
+    answer: str
+
+# User feedback schemas
+class FeedbackBase(BaseModel):
+    debug_query_id: int
+    helpful: bool
+    comments: Optional[str] = None
+
+class FeedbackCreate(FeedbackBase):
+    pass
+
+class Feedback(FeedbackBase):
+    id: int
+    created_at: Optional[datetime] = None
+    
+    class Config:
+        from_attributes = True
+
+
+--- File: C:\Shashank\SaaS\code-rag-debugger\backend\models\__init__.py ---
+
+from .database import get_db
+from .models import Project, Commit, Feedback
+from . import schemas
+from . import crud
+
+__all__ = [
+    "get_db", 
+    "Project", "Commit", "Feedback",
+    "schemas", "crud"
+]
+
+
+--- File: C:\Shashank\SaaS\code-rag-debugger\backend\routers\debug.py ---
+
+from fastapi import APIRouter, Depends, HTTPException, status
+from models.database import get_db
+from models import schemas
+from models import crud
+from services.rag_service import rag_service
+
+router = APIRouter(prefix="/debug", tags=["debug"])
+
+@router.post("/", response_model=schemas.DebugResponse)
+def debug_code(query: schemas.DebugQuery):
+    """Debug a code error using RAG"""
+    # Verify project exists
+    db_project = crud.project.get(query.project_id)
+    if db_project is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Project not found"
+        )
+    
+    # Generate debug response using RAG
+    result = rag_service.generate_debug_response(
+        query.project_id,
+        query.error_message,
+        query.code_snippet,
+        query.file_path,
+        query.additional_context
+    )
+    
+    return result
+
+@router.post("/rag", response_model=schemas.RAGResponse)
+def rag_query(query: schemas.RAGQuery):
+    """Perform a general RAG query on project data"""
+    # Verify project exists
+    db_project = crud.project.get(query.project_id)
+    if db_project is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Project not found"
+        )
+    
+    # This would use the retrieval service to get results
+    # For now, return a placeholder response
+    return {
+        "results": [],
+        "answer": "This feature is not fully implemented yet."
+    }
+
+
+--- File: C:\Shashank\SaaS\code-rag-debugger\backend\routers\history.py ---
+
+from fastapi import APIRouter, Depends, HTTPException, status
+from typing import List
+
+from models import schemas
+from models import crud
+
+router = APIRouter(prefix="/history", tags=["history"])
+
+@router.get("/commits/{commit_hash}", response_model=schemas.Commit)
+def read_commit(commit_hash: str, project_id: int):
+    """Get a specific commit"""
+    commit = crud.commit.get_by_hash(hash=commit_hash, project_id=project_id)
+    if commit is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Commit not found"
+        )
+    return commit
+
+@router.post("/feedback", response_model=schemas.Feedback)
+def create_feedback(feedback: schemas.FeedbackCreate):
+    """Submit feedback on a debug response"""
+    db_feedback = crud.feedback.create(feedback.model_dump())
+    return db_feedback
+
+@router.get("/feedback/{debug_query_id}", response_model=List[schemas.Feedback])
+def read_feedback(debug_query_id: int):
+    """Get feedback for a specific debug query"""
+    feedback = crud.feedback.get_by_debug_query(debug_query_id=debug_query_id)
+    return feedback
+
+
+--- File: C:\Shashank\SaaS\code-rag-debugger\backend\routers\projects.py ---
+
+from fastapi import APIRouter, Depends, HTTPException, status, Response
+from typing import List
+import logging
+
+from models import schemas
+from models import crud
+from services.git_service import git_service
+from services.embedding_service import embedding_service
+from models.database import get_db
+
+router = APIRouter(prefix="/projects", tags=["projects"])
+logger = logging.getLogger(__name__)
+
+# --- CORS Preflight Handlers ---
+@router.options("/")
+async def options_projects():
+    return Response(headers={
+        "Access-Control-Allow-Origin": "http://localhost:3000",
+        "Access-Control-Allow-Methods": "POST, GET, OPTIONS",
+        "Access-Control-Allow-Headers": "Content-Type",
+    })
+
+@router.options("/{project_id}")
+async def options_project(project_id: int):
+    return Response(headers={
+        "Access-Control-Allow-Origin": "http://localhost:3000",
+        "Access-Control-Allow-Methods": "GET, OPTIONS",
+        "Access-Control-Allow-Headers": "Content-Type",
+    })
+
+@router.options("/{project_id}/refresh")
+async def options_refresh(project_id: int):
+    return Response(headers={
+        "Access-Control-Allow-Origin": "http://localhost:3000",
+        "Access-Control-Allow-Methods": "POST, OPTIONS",
+        "Access-Control-Allow-Headers": "Content-Type",
+    })
+
+@router.options("/{project_id}/commits")
+async def options_commits(project_id: int):
+    return Response(headers={
+        "Access-Control-Allow-Origin": "http://localhost:3000",
+        "Access-Control-Allow-Methods": "GET, OPTIONS",
+        "Access-Control-Allow-Headers": "Content-Type",
+    })
+
+# --- Existing Endpoints ---
+@router.post("/", response_model=schemas.Project)
+def create_project(project: schemas.ProjectCreate):
+    """Create a new project and clone its repository"""
+    try:
+        # Test database connection first
+        get_db()
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=f"Database connection failed: {str(e)}"
+        )
+    
+    # Check if project already exists
+    db_project = crud.project.get_by_name(name=project.name)
+    if db_project:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Project with this name already exists"
+        )
+    
+    # Clone or update the repository
+    try:
+        repo_path = git_service.clone_or_update_repo(project.git_url, project.name)
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Failed to clone repository: {str(e)}"
+        )
+    
+    # Get commit history
+    try:
+        commits = git_service.get_commit_history(repo_path)
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Failed to get commit history: {str(e)}"
+        )
+    
+    # Create project in database
+    project_data = project.model_dump()
+    db_project = crud.project.create(project_data)
+    
+    if db_project is None:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to create project in database"
+        )
+    
+    # Add commits to database
+    successful_commits = 0
+    for commit_data in commits:
+        if isinstance(commit_data["files_changed"], str):
+            try:
+                if commit_data["files_changed"].startswith('{') and commit_data["files_changed"].endswith('}'):
+                    files_str = commit_data["files_changed"][1:-1]
+                    commit_data["files_changed"] = [f.strip() for f in files_str.split(',') if f.strip()]
+                else:
+                    commit_data["files_changed"] = [commit_data["files_changed"]]
+            except:
+                commit_data["files_changed"] = []
+        
+        commit_data["project_id"] = db_project["id"]
+        result = crud.commit.create_commit(commit_data)
+        if result:
+            successful_commits += 1
+    
+    logger.info(f"Created project with {successful_commits}/{len(commits)} commits")
+    
+    # Index commits in vector database
+    try:
+        embedding_service.index_commit_history(db_project["id"], commits)
+    except Exception as e:
+        logger.error(f"Failed to index commits: {e}")
+    
+    return db_project
+
+@router.get("/", response_model=List[schemas.Project])
+def read_projects(skip: int = 0, limit: int = 100):
+    """Get all projects"""
+    projects = crud.project.get_multi(skip=skip, limit=limit)
+    return projects
+
+@router.get("/{project_id}", response_model=schemas.Project)
+def read_project(project_id: int):
+    """Get a specific project"""
+    db_project = crud.project.get(project_id)
+    if db_project is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Project not found"
+        )
+    return db_project
+
+@router.get("/{project_id}/commits", response_model=List[schemas.Commit])
+def read_project_commits(project_id: int, skip: int = 0, limit: int = 100):
+    """Get commits for a specific project"""
+    db_project = crud.project.get(project_id)
+    if db_project is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Project not found"
+        )
+    
+    commits = crud.commit.get_by_project(project_id=project_id, skip=skip, limit=limit)
+    return commits
+
+@router.post("/{project_id}/refresh")
+def refresh_project(project_id: int):
+    """Refresh a project's data from git"""
+    db_project = crud.project.get(project_id)
+    if db_project is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Project not found"
+        )
+    
+    try:
+        repo_path = git_service.clone_or_update_repo(db_project["git_url"], db_project["name"])
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Failed to update repository: {str(e)}"
+        )
+    
+    try:
+        commits = git_service.get_commit_history(repo_path)
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Failed to get commit history: {str(e)}"
+        )
+    
+    try:
+        embedding_service.index_commit_history(db_project["id"], commits)
+        return {"message": "Project refreshed successfully"}
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Failed to refresh project: {str(e)}"
+        )
+
+
+
+--- File: C:\Shashank\SaaS\code-rag-debugger\backend\routers\__init__.py ---
+
+from .projects import router as projects_router
+from .debug import router as debug_router
+from .history import router as history_router
+
+__all__ = [
+    "projects_router",
+    "debug_router", 
+    "history_router"
+]
+
+
+--- File: C:\Shashank\SaaS\code-rag-debugger\backend\services\embedding_service.py ---
+
+import chromadb
+from chromadb.config import Settings
+from chromadb.utils import embedding_functions
+import numpy as np
+from typing import List, Dict, Any
+from config import settings
+import logging
+import uuid
+
+logger = logging.getLogger(__name__)
+
+class EmbeddingService:
+    def __init__(self):
+        # Initialize ChromaDB client with telemetry disabled
+        self.chroma_client = chromadb.PersistentClient(
+            path=settings.CHROMA_DB_PATH,
+            settings=Settings(anonymized_telemetry=False)
+        )
+        
+        # Use Chroma's default embedding function
+        self.embedding_function = embedding_functions.DefaultEmbeddingFunction()
+
+    def create_collection(self, collection_name: str):
+        """Create a new collection in ChromaDB"""
+        try:
+            return self.chroma_client.get_or_create_collection(
+                name=collection_name,
+                embedding_function=self.embedding_function,
+                metadata={"hnsw:space": "cosine"}
+            )
+        except Exception as e:
+            logger.error(f"Failed to create collection {collection_name}: {e}")
+            raise
+
+    def add_documents(self, collection_name: str, documents: List[Dict[str, Any]]):
+        """Add documents to a collection with embeddings"""
+        try:
+            collection = self.create_collection(collection_name)
+            
+            # Extract texts and metadata
+            texts = [doc["content"] for doc in documents]
+            metadatas = [doc["metadata"] for doc in documents]
+            ids = [str(uuid.uuid4()) for _ in documents]
+            
+            # Add to collection - Chroma will handle embeddings automatically
+            collection.add(
+                documents=texts,
+                metadatas=metadatas,
+                ids=ids
+            )
+            
+            logger.info(f"Added {len(documents)} documents to collection {collection_name}")
+            
+        except Exception as e:
+            logger.error(f"Failed to add documents to collection {collection_name}: {e}")
+            raise
+
+    def query_collection(self, collection_name: str, query_text: str, n_results: int = 5) -> List[Dict[str, Any]]:
+        """Query a collection for similar documents"""
+        try:
+            collection = self.create_collection(collection_name)
+            
+            # Query the collection
+            results = collection.query(
+                query_texts=[query_text],
+                n_results=n_results
+            )
+            
+            # Format results
+            formatted_results = []
+            for i in range(len(results["documents"][0])):
+                formatted_results.append({
+                    "content": results["documents"][0][i],
+                    "metadata": results["metadatas"][0][i],
+                    "distance": results["distances"][0][i]
+                })
+            
+            return formatted_results
+            
+        except Exception as e:
+            logger.error(f"Failed to query collection {collection_name}: {e}")
+            return []
+
+    def index_commit_history(self, project_id: int, commits: List[Dict[str, Any]]):
+        """Index commit history for a project"""
+        collection_name = f"project_{project_id}_commits"
+        documents = []
+        
+        for commit in commits:
+            # Create a document for each commit
+            content = f"Commit: {commit['hash']}\nAuthor: {commit['author']}\nMessage: {commit['message']}\nFiles: {', '.join(commit['files_changed'])}"
+            
+            documents.append({
+                "content": content,
+                "metadata": {
+                    "type": "commit",
+                    "hash": commit["hash"],
+                    "author": commit["author"],
+                    "timestamp": commit["timestamp"].isoformat(),
+                    "project_id": project_id
+                }
+            })
+        
+        self.add_documents(collection_name, documents)
+
+    def index_code_files(self, project_id: int, repo_path: str, file_patterns: List[str] = None):
+        """Index code files for a project"""
+        # This would be implemented to parse and index code files
+        # For simplicity, we're not implementing the full file traversal here
+        pass
+
+embedding_service = EmbeddingService()
+
+
+--- File: C:\Shashank\SaaS\code-rag-debugger\backend\services\git_service.py ---
+
+import git
+import os
+from typing import List, Dict, Any
+from datetime import datetime
+from config import settings
+import logging
+from pathlib import Path
+
+logger = logging.getLogger(__name__)
+
+class GitService:
+    def __init__(self):
+        self.repo_base_path = Path(settings.REPOSITORY_BASE_PATH)
+        self.repo_base_path.mkdir(exist_ok=True)
+
+    def clone_or_update_repo(self, git_url: str, project_name: str) -> str:
+        """Clone or update a git repository"""
+        repo_path = self.repo_base_path / project_name
+        
+        try:
+            if repo_path.exists():
+                # Update existing repository
+                repo = git.Repo(repo_path)
+                origin = repo.remotes.origin
+                origin.pull()
+                logger.info(f"Updated repository: {project_name}")
+            else:
+                # Clone new repository
+                repo = git.Repo.clone_from(git_url, repo_path)
+                logger.info(f"Cloned repository: {project_name}")
+                
+            return str(repo_path)
+        except git.exc.GitCommandError as e:
+            logger.error(f"Git operation failed for {project_name}: {e}")
+            raise Exception(f"Failed to clone or update repository: {e}")
+
+    def get_commit_history(self, repo_path: str, max_commits: int = None) -> List[Dict[str, Any]]:
+        """Get commit history from a repository"""
+        if max_commits is None:
+            max_commits = settings.MAX_COMMIT_HISTORY
+            
+        try:
+            repo = git.Repo(repo_path)
+            commits = []
+            
+            for commit in repo.iter_commits(max_count=max_commits):
+                # Get files changed in this commit as a proper list
+                files_changed = []
+                try:
+                    # Get the diff for this commit and extract file paths
+                    if commit.parents:
+                        # Compare with parent commit
+                        parent = commit.parents[0]
+                        diff = parent.diff(commit)
+                        files_changed = [d.a_path for d in diff if d.a_path]
+                    else:
+                        # Initial commit - get all files in the tree
+                        files_changed = [item.path for item in commit.tree.traverse() if isinstance(item, git.Blob)]
+                except (IndexError, AttributeError, Exception) as e:
+                    logger.warning(f"Could not get files changed for commit {commit.hexsha}: {e}")
+                    # Fallback: try to get files from stats
+                    try:
+                        files_changed = list(commit.stats.files.keys())
+                    except:
+                        files_changed = []
+                
+                commits.append({
+                    "hash": commit.hexsha,
+                    "author": str(commit.author),
+                    "message": commit.message.strip(),
+                    "timestamp": datetime.fromtimestamp(commit.committed_date),
+                    "files_changed": files_changed  # This should be a list, not a string
+                })
+                
+            return commits
+        except git.exc.InvalidGitRepositoryError:
+            logger.error(f"Invalid git repository: {repo_path}")
+            raise Exception(f"Path is not a valid git repository: {repo_path}")
+
+    def get_file_content(self, repo_path: str, file_path: str, commit_hash: str = None) -> str:
+        """Get content of a file at a specific commit"""
+        try:
+            repo = git.Repo(repo_path)
+            
+            if commit_hash:
+                # Get file content at specific commit
+                commit = repo.commit(commit_hash)
+                return commit.tree[file_path].data_stream.read().decode('utf-8')
+            else:
+                # Get current file content
+                file_path_obj = Path(repo_path) / file_path
+                with open(file_path_obj, 'r', encoding='utf-8') as f:
+                    return f.read()
+                    
+        except (KeyError, FileNotFoundError):
+            logger.error(f"File not found: {file_path} at commit {commit_hash}")
+            raise Exception(f"File not found: {file_path}")
+        except git.exc.BadName:
+            logger.error(f"Invalid commit hash: {commit_hash}")
+            raise Exception(f"Invalid commit hash: {commit_hash}")
+
+    def get_diff(self, repo_path: str, commit_hash: str) -> str:
+        """Get the diff for a specific commit"""
+        try:
+            repo = git.Repo(repo_path)
+            commit = repo.commit(commit_hash)
+            
+            if commit.parents:
+                # Compare with parent commit
+                parent = commit.parents[0]
+                return repo.git.diff(parent.hexsha, commit.hexsha)
+            else:
+                # Initial commit - show all files
+                return repo.git.show(commit.hexsha)
+                
+        except git.exc.BadName:
+            logger.error(f"Invalid commit hash: {commit_hash}")
+            raise Exception(f"Invalid commit hash: {commit_hash}")
+
+git_service = GitService()
+
+
+--- File: C:\Shashank\SaaS\code-rag-debugger\backend\services\ollama_client.py ---
+
+import requests
+import json
+from typing import Dict, Any, List
+from config import settings
+import logging
+
+logger = logging.getLogger(__name__)
+
+class OllamaClient:
+    def __init__(self):
+        self.base_url = settings.OLLAMA_BASE_URL
+        self.model = settings.OLLAMA_MODEL
+
+    def generate(self, prompt: str, context: List[str] = None, temperature: float = 0.1) -> str:
+        """Generate a response using the Ollama API"""
+        try:
+            # Build the full prompt with context
+            full_prompt = self._build_prompt(prompt, context)
+            
+            payload = {
+                "model": self.model,
+                "prompt": full_prompt,
+                "temperature": temperature,
+                "stream": False
+            }
+            
+            response = requests.post(
+                f"{self.base_url}/api/generate",
+                json=payload,
+                timeout=120  # Longer timeout for generation
+            )
+            
+            if response.status_code == 200:
+                result = response.json()
+                return result.get("response", "")
+            else:
+                logger.error(f"Ollama API error: {response.status_code} - {response.text}")
+                return "Sorry, I couldn't process your request at this time."
+                
+        except requests.exceptions.RequestException as e:
+            logger.error(f"Request to Ollama failed: {e}")
+            return "Connection to the AI service failed. Please try again later."
+    
+    def _build_prompt(self, prompt: str, context: List[str] = None) -> str:
+        """Build a prompt with context for the model"""
+        if not context:
+            return prompt
+            
+        context_str = "\n".join([f"Context {i+1}: {ctx}" for i, ctx in enumerate(context)])
+        return f"""Based on the following context:
+
+{context_str}
+
+Please respond to this query: {prompt}
+
+Your response should be helpful, concise, and focused on solving the problem."""
+    
+    def generate_embeddings(self, texts: List[str]) -> List[List[float]]:
+        """Generate embeddings using Ollama"""
+        try:
+            payload = {
+                "model": self.model,
+                "prompts": texts
+            }
+            
+            response = requests.post(
+                f"{self.base_url}/api/embeddings",
+                json=payload,
+                timeout=30
+            )
+            
+            if response.status_code == 200:
+                result = response.json()
+                return [embedding.get("embedding", []) for embedding in result.get("embeddings", [])]
+            else:
+                logger.error(f"Ollama embeddings error: {response.status_code} - {response.text}")
+                return []
+                
+        except requests.exceptions.RequestException as e:
+            logger.error(f"Request to Ollama embeddings failed: {e}")
+            return []
+
+ollama_client = OllamaClient()
+
+
+--- File: C:\Shashank\SaaS\code-rag-debugger\backend\services\rag_service.py ---
+
+from typing import List, Dict, Any
+from .retrieval_service import retrieval_service
+from .ollama_client import ollama_client
+import logging
+
+logger = logging.getLogger(__name__)
+
+class RAGService:
+    def __init__(self):
+        pass
+
+    def generate_debug_response(self, project_id: int, error_message: str, 
+                              code_snippet: str = None, file_path: str = None, 
+                              additional_context: str = None) -> Dict[str, Any]:
+        """Generate a debug response using RAG"""
+        try:
+            # Step 1: Retrieve relevant context
+            similar_errors = retrieval_service.retrieve_similar_errors(project_id, error_message)
+            documentation = retrieval_service.retrieve_relevant_documentation(project_id, error_message)
+            code_suggestions = retrieval_service.get_code_suggestions(project_id, error_message, code_snippet)
+            
+            # Step 2: Build context for the LLM
+            context = self._build_context(
+                similar_errors, 
+                documentation, 
+                code_suggestions,
+                code_snippet,
+                file_path,
+                additional_context
+            )
+            
+            # Step 3: Generate response using Ollama
+            prompt = self._build_debug_prompt(error_message, context)
+            response = ollama_client.generate(prompt, context)
+            
+            # Step 4: Calculate confidence (simplified)
+            confidence = self._calculate_confidence(similar_errors, response)
+            
+            return {
+                "solution": response,
+                "context": {
+                    "similar_errors": similar_errors,
+                    "documentation": documentation,
+                    "code_suggestions": code_suggestions
+                },
+                "confidence": confidence
+            }
+            
+        except Exception as e:
+            logger.error(f"Failed to generate debug response: {e}")
+            return {
+                "solution": "Sorry, I encountered an error while processing your request.",
+                "context": {},
+                "confidence": 0.0
+            }
+
+    def _build_context(self, similar_errors: List[Dict[str, Any]], 
+                      documentation: List[Dict[str, Any]], 
+                      code_suggestions: List[str],
+                      code_snippet: str = None,
+                      file_path: str = None,
+                      additional_context: str = None) -> List[str]:
+        """Build context for the LLM from retrieved information"""
+        context = []
+        
+        # Add similar errors
+        if similar_errors:
+            context.append("Similar errors found in project history:")
+            for error in similar_errors[:3]:  # Limit to top 3
+                context.append(f"- Commit {error['commit']['hash']}: {error['content']}")
+        
+        # Add documentation
+        if documentation:
+            context.append("Relevant documentation:")
+            for doc in documentation[:2]:  # Limit to top 2
+                context.append(f"- {doc['content']}")
+        
+        # Add code suggestions
+        if code_suggestions:
+            context.append("General code suggestions:")
+            for suggestion in code_suggestions[:3]:  # Limit to top 3
+                context.append(f"- {suggestion}")
+        
+        # Add current code context
+        if code_snippet:
+            context.append(f"Current code snippet:\n{code_snippet}")
+        
+        if file_path:
+            context.append(f"File path: {file_path}")
+            
+        if additional_context:
+            context.append(f"Additional context: {additional_context}")
+            
+        return context
+
+    def _build_debug_prompt(self, error_message: str, context: List[str] = None) -> str:
+        """Build a prompt for debugging"""
+        base_prompt = f"""You are an expert software developer helping to debug an issue.
+
+Error: {error_message}
+
+Please provide a helpful solution to fix this error. Be specific and provide code examples if appropriate.
+
+Consider the following context from the project's history and documentation:
+"""
+        
+        if context:
+            context_str = "\n".join(context)
+            return f"{base_prompt}\n{context_str}\n\nSolution:"
+        else:
+            return f"{base_prompt}\n\nSolution:"
+
+    def _calculate_confidence(self, similar_errors: List[Dict[str, Any]], response: str) -> float:
+        """Calculate confidence score for the response"""
+        if not similar_errors:
+            return 0.3  # Low confidence if no similar errors found
+        
+        # Calculate average similarity of retrieved errors
+        avg_similarity = sum(error.get('similarity', 0) for error in similar_errors) / len(similar_errors)
+        
+        # Adjust based on response quality (simplified)
+        quality_indicator = 1.0 if any(keyword in response.lower() for keyword in ["fix", "solution", "try", "change"]) else 0.5
+        
+        return min(0.9, avg_similarity * quality_indicator)
+
+rag_service = RAGService()
+
+
+--- File: C:\Shashank\SaaS\code-rag-debugger\backend\services\retrieval_service.py ---
+
+from typing import List, Dict, Any
+from .embedding_service import embedding_service
+from .git_service import git_service
+import logging
+
+logger = logging.getLogger(__name__)
+
+class RetrievalService:
+    def __init__(self):
+        pass
+
+    def retrieve_similar_errors(self, project_id: int, error_message: str, n_results: int = 5) -> List[Dict[str, Any]]:
+        """Retrieve similar errors from the project's history"""
+        try:
+            # Query the commit collection for similar errors
+            collection_name = f"project_{project_id}_commits"
+            results = embedding_service.query_collection(
+                collection_name, 
+                error_message, 
+                n_results
+            )
+            
+            # Filter for commits that might contain error fixes
+            error_commits = []
+            for result in results:
+                if any(keyword in result["content"].lower() for keyword in ["fix", "error", "bug", "issue"]):
+                    error_commits.append({
+                        "commit": result["metadata"],
+                        "similarity": 1 - result["distance"],  # Convert distance to similarity
+                        "content": result["content"]
+                    })
+            
+            return error_commits
+            
+        except Exception as e:
+            logger.error(f"Failed to retrieve similar errors: {e}")
+            return []
+
+    def retrieve_relevant_documentation(self, project_id: int, query: str, n_results: int = 3) -> List[Dict[str, Any]]:
+        """Retrieve relevant documentation for a query"""
+        # This would query a documentation collection
+        # For now, return empty list as placeholder
+        return []
+
+    def get_commit_context(self, project_id: int, commit_hash: str) -> Dict[str, Any]:
+        """Get detailed context for a specific commit"""
+        try:
+            # Get project to find repo path
+            # This would require database access which we'll handle in the router
+            # For now, return basic info
+            return {
+                "hash": commit_hash,
+                "details": f"Commit {commit_hash} details would be retrieved here"
+            }
+        except Exception as e:
+            logger.error(f"Failed to get commit context: {e}")
+            return {}
+
+    def get_code_suggestions(self, project_id: int, error_message: str, code_snippet: str = None) -> List[str]:
+        """Get code suggestions based on error and context"""
+        # This would use more advanced retrieval and potentially pattern matching
+        # For now, return placeholder
+        return [
+            "Check for null references in your code",
+            "Verify input parameters are valid",
+            "Ensure all resources are properly disposed"
+        ]
+
+retrieval_service = RetrievalService()
+
+
+--- File: C:\Shashank\SaaS\code-rag-debugger\backend\services\__init__.py ---
+
+from .git_service import git_service
+from .embedding_service import embedding_service
+from .retrieval_service import retrieval_service
+from .rag_service import rag_service
+from .ollama_client import ollama_client
+
+__all__ = [
+    "git_service",
+    "embedding_service",
+    "retrieval_service", 
+    "rag_service",
+    "ollama_client"
+]
+
+
+--- File: C:\Shashank\SaaS\code-rag-debugger\backend\utils\chunking.py ---
+
+from typing import List, Dict, Any
+import re
+
+def chunk_commits(commits: List[Dict[str, Any]], max_chunk_size: int = 1000) -> List[Dict[str, Any]]:
+    """Chunk commits into smaller pieces for embedding"""
+    chunks = []
+    
+    for commit in commits:
+        content = f"Commit: {commit['hash']}\nAuthor: {commit['author']}\nMessage: {commit['message']}\nFiles: {', '.join(commit['files_changed'])}"
+        
+        # If content is too long, split it
+        if len(content) > max_chunk_size:
+            # Split by lines and create smaller chunks
+            lines = content.split('\n')
+            current_chunk = []
+            current_size = 0
+            
+            for line in lines:
+                if current_size + len(line) + 1 > max_chunk_size and current_chunk:
+                    chunks.append({
+                        "content": '\n'.join(current_chunk),
+                        "metadata": {
+                            "type": "commit",
+                            "hash": commit["hash"],
+                            "author": commit["author"],
+                            "timestamp": commit["timestamp"].isoformat(),
+                            "chunk_type": "partial"
+                        }
+                    })
+                    current_chunk = []
+                    current_size = 0
+                
+                current_chunk.append(line)
+                current_size += len(line) + 1
+            
+            if current_chunk:
+                chunks.append({
+                    "content": '\n'.join(current_chunk),
+                    "metadata": {
+                        "type": "commit",
+                        "hash": commit["hash"],
+                        "author": commit["author"],
+                        "timestamp": commit["timestamp"].isoformat(),
+                        "chunk_type": "partial"
+                    }
+                })
+        else:
+            chunks.append({
+                "content": content,
+                "metadata": {
+                    "type": "commit",
+                    "hash": commit["hash"],
+                    "author": commit["author"],
+                    "timestamp": commit["timestamp"].isoformat(),
+                    "chunk_type": "full"
+                }
+            })
+    
+    return chunks
+
+def chunk_text(text: str, metadata: Dict[str, Any], max_chunk_size: int = 1000) -> List[Dict[str, Any]]:
+    """Chunk text into smaller pieces for embedding"""
+    chunks = []
+    
+    # Split by paragraphs or sentences
+    paragraphs = re.split(r'\n\s*\n', text)
+    
+    current_chunk = []
+    current_size = 0
+    
+    for paragraph in paragraphs:
+        if current_size + len(paragraph) + 2 > max_chunk_size and current_chunk:
+            chunks.append({
+                "content": '\n\n'.join(current_chunk),
+                "metadata": {**metadata, "chunk_type": "partial"}
+            })
+            current_chunk = []
+            current_size = 0
+        
+        current_chunk.append(paragraph)
+        current_size += len(paragraph) + 2
+    
+    if current_chunk:
+        chunks.append({
+            "content": '\n\n'.join(current_chunk),
+            "metadata": {**metadata, "chunk_type": "full"}
+        })
+    
+    return chunks
+
+
+--- File: C:\Shashank\SaaS\code-rag-debugger\backend\utils\file_processing.py ---
+
+import os
+from pathlib import Path
+from typing import List, Dict, Any
+import logging
+import re
+
+logger = logging.getLogger(__name__)
+
+def find_code_files(directory: str, extensions: List[str] = None) -> List[str]:
+    """
+    Find all code files in a directory with the given extensions.
+    
+    Args:
+        directory: The directory to search in
+        extensions: List of file extensions to include (e.g., ['.py', '.js', '.java'])
+    
+    Returns:
+        List of file paths relative to the directory
+    """
+    if extensions is None:
+        extensions = ['.py', '.js', '.ts', '.java', '.cpp', '.c', '.h', '.hpp', '.go', '.rs', '.rb', '.php']
+    
+    code_files = []
+    directory_path = Path(directory)
+    
+    try:
+        for extension in extensions:
+            for file_path in directory_path.rglob(f"*{extension}"):
+                if file_path.is_file():
+                    # Get relative path
+                    relative_path = file_path.relative_to(directory_path)
+                    code_files.append(str(relative_path))
+    except Exception as e:
+        logger.error(f"Error finding code files in {directory}: {e}")
+    
+    return code_files
+
+def read_code_files(directory: str, file_paths: List[str]) -> Dict[str, str]:
+    """
+    Read the content of multiple code files.
+    
+    Args:
+        directory: The base directory
+        file_paths: List of relative file paths
+    
+    Returns:
+        Dictionary mapping file paths to their content
+    """
+    contents = {}
+    directory_path = Path(directory)
+    
+    for file_path in file_paths:
+        try:
+            full_path = directory_path / file_path
+            if full_path.exists() and full_path.is_file():
+                with open(full_path, 'r', encoding='utf-8') as f:
+                    contents[str(file_path)] = f.read()
+        except UnicodeDecodeError:
+            logger.warning(f"Could not read file {file_path} (encoding issue)")
+        except Exception as e:
+            logger.error(f"Error reading file {file_path}: {e}")
+    
+    return contents
+
+def extract_code_metadata(file_path: str, content: str) -> Dict[str, Any]:
+    """
+    Extract metadata from code file content.
+    
+    Args:
+        file_path: The file path
+        content: The file content
+    
+    Returns:
+        Dictionary with extracted metadata
+    """
+    metadata = {
+        "file_path": file_path,
+        "file_extension": os.path.splitext(file_path)[1],
+        "lines_of_code": len(content.splitlines()),
+        "size_bytes": len(content.encode('utf-8')),
+        "imports": [],
+        "functions": [],
+        "classes": []
+    }
+    
+    # Extract imports (simple regex-based approach)
+    import_patterns = {
+        '.py': r'^(?:from\s+(\S+)\s+)?import\s+([^\n#]+)',
+        '.js': r'^(?:import\s+[^\']+from\s+)?[\'"]([^\'"]+)[\'"]',  # Fixed: escaped single quote
+        '.java': r'^import\s+([^;]+);'
+    }
+    
+    extension = metadata["file_extension"]
+    if extension in import_patterns:
+        matches = re.findall(import_patterns[extension], content, re.MULTILINE)
+        if matches:
+            if extension == '.py':
+                # For Python, matches are tuples (from_module, import_target)
+                metadata["imports"] = [f"{frm} {imp}" if frm else imp for frm, imp in matches if imp]
+            else:
+                metadata["imports"] = [match[0] if isinstance(match, tuple) else match for match in matches]
+    
+    # Extract function definitions
+    function_patterns = {
+        '.py': r'^def\s+(\w+)\s*\([^)]*\)\s*:',
+        '.js': r'^(?:function\s+(\w+)\s*\([^)]*\)|const\s+(\w+)\s*=\s*\([^)]*\)\s*=>|let\s+(\w+)\s*=\s*\([^)]*\)\s*=>)',
+        '.java': r'^(?:public|private|protected)\s+[^{]+\s+(\w+)\s*\([^)]*\)\s*\{'
+    }
+    
+    if extension in function_patterns:
+        matches = re.findall(function_patterns[extension], content, re.MULTILINE)
+        if matches:
+            # Flatten tuples and filter empty strings
+            flat_matches = []
+            for match in matches:
+                if isinstance(match, tuple):
+                    flat_matches.extend([m for m in match if m])
+                elif match:
+                    flat_matches.append(match)
+            metadata["functions"] = flat_matches
+    
+    # Extract class definitions
+    class_patterns = {
+        '.py': r'^class\s+(\w+)',
+        '.js': r'^class\s+(\w+)',
+        '.java': r'^class\s+(\w+)'
+    }
+    
+    if extension in class_patterns:
+        matches = re.findall(class_patterns[extension], content, re.MULTILINE)
+        metadata["classes"] = matches
+    
+    return metadata
+
+def get_file_tree(directory: str, max_depth: int = 3) -> Dict[str, Any]:
+    """
+    Generate a file tree structure for the directory.
+    
+    Args:
+        directory: The directory to scan
+        max_depth: Maximum depth to traverse
+    
+    Returns:
+        Nested dictionary representing the file tree
+    """
+    def build_tree(path: Path, current_depth: int = 0) -> Dict[str, Any]:
+        if current_depth > max_depth:
+            return {}
+        
+        if path.is_file():
+            return {
+                "name": path.name,
+                "type": "file",
+                "size": path.stat().st_size,
+                "modified": path.stat().st_mtime
+            }
+        elif path.is_dir():
+            tree = {
+                "name": path.name,
+                "type": "directory",
+                "children": {}
+            }
+            try:
+                for item in path.iterdir():
+                    if item.name.startswith('.'):
+                        continue  # Skip hidden files/directories
+                    tree["children"][item.name] = build_tree(item, current_depth + 1)
+            except PermissionError:
+                logger.warning(f"Permission denied accessing {path}")
+            return tree
+        return {}
+    
+    return build_tree(Path(directory))
+
+
+--- File: C:\Shashank\SaaS\code-rag-debugger\backend\utils\logging.py ---
+
+import logging
+import sys
+from typing import Optional
+from pathlib import Path
+import json
+from datetime import datetime
+
+def setup_logging(
+    log_level: str = "INFO",
+    log_file: Optional[str] = None,
+    console_output: bool = True
+) -> None:
+    """
+    Set up logging configuration.
+    
+    Args:
+        log_level: Logging level (DEBUG, INFO, WARNING, ERROR, CRITICAL)
+        log_file: Path to log file (optional)
+        console_output: Whether to output logs to console
+    """
+    # Convert string level to logging level
+    level = getattr(logging, log_level.upper(), logging.INFO)
+    
+    # Clear any existing handlers
+    logging.getLogger().handlers.clear()
+    
+    # Create formatter
+    formatter = logging.Formatter(
+        '%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+        datefmt='%Y-%m-%d %H:%M:%S'
+    )
+    
+    # Create console handler if requested
+    if console_output:
+        console_handler = logging.StreamHandler(sys.stdout)
+        console_handler.setFormatter(formatter)
+        console_handler.setLevel(level)
+        logging.getLogger().addHandler(console_handler)
+    
+    # Create file handler if log file is specified
+    if log_file:
+        # Create directory if it doesn't exist
+        log_path = Path(log_file)
+        log_path.parent.mkdir(parents=True, exist_ok=True)
+        
+        file_handler = logging.FileHandler(log_file)
+        file_handler.setFormatter(formatter)
+        file_handler.setLevel(level)
+        logging.getLogger().addHandler(file_handler)
+    
+    # Set the root logger level
+    logging.getLogger().setLevel(level)
+    
+    # Set levels for specific noisy loggers
+    logging.getLogger("chromadb").setLevel(logging.WARNING)
+    logging.getLogger("git").setLevel(logging.WARNING)
+    logging.getLogger("urllib3").setLevel(logging.WARNING)
+    
+    logging.info(f"Logging setup complete. Level: {log_level}")
+
+def get_logger(name: str) -> logging.Logger:
+    """
+    Get a logger with the given name.
+    
+    Args:
+        name: Logger name
+    
+    Returns:
+        Configured logger instance
+    """
+    return logging.getLogger(name)
+
+class JsonFormatter(logging.Formatter):
+    """Custom formatter that outputs logs in JSON format."""
+    
+    def format(self, record: logging.LogRecord) -> str:
+        log_data = {
+            "timestamp": datetime.fromtimestamp(record.created).isoformat(),
+            "level": record.levelname,
+            "logger": record.name,
+            "message": record.getMessage(),
+            "module": record.module,
+            "function": record.funcName,
+            "line": record.lineno
+        }
+        
+        # Add exception info if present
+        if record.exc_info:
+            log_data["exception"] = self.formatException(record.exc_info)
+        
+        return json.dumps(log_data)
+
+def setup_json_logging(
+    log_file: str,
+    log_level: str = "INFO"
+) -> None:
+    """
+    Set up JSON logging to a file.
+    
+    Args:
+        log_file: Path to JSON log file
+        log_level: Logging level
+    """
+    level = getattr(logging, log_level.upper(), logging.INFO)
+    
+    # Create directory if it doesn't exist
+    log_path = Path(log_file)
+    log_path.parent.mkdir(parents=True, exist_ok=True)
+    
+    # Create JSON file handler
+    file_handler = logging.FileHandler(log_file)
+    file_handler.setFormatter(JsonFormatter())
+    file_handler.setLevel(level)
+    
+    # Add to root logger
+    logging.getLogger().addHandler(file_handler)
+    logging.getLogger().setLevel(level)
+
+
+--- File: C:\Shashank\SaaS\code-rag-debugger\backend\utils\__init__.py ---
+
+from .chunking import chunk_commits, chunk_text
+from .file_processing import read_code_files, find_code_files, extract_code_metadata
+from .logging import setup_logging, get_logger
+
+__all__ = [
+    "chunk_commits",
+    "chunk_text",
+    "read_code_files",
+    "find_code_files",
+    "extract_code_metadata",
+    "setup_logging",
+    "get_logger"
+]
+

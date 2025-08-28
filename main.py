@@ -1,11 +1,10 @@
-from fastapi import FastAPI, Depends
+from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from contextlib import asynccontextmanager
 import logging
 
 from config import settings
-from models.database import engine, Base
-import models  # this triggers __init__.py and registers models with Base
+import models
 from routers import projects, debug, history
 
 # Set up logging
@@ -14,11 +13,8 @@ logger = logging.getLogger(__name__)
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # Startup: Create database tables
-    logger.info("Creating database tables...")
-    Base.metadata.create_all(bind=engine)
+    logger.info("Starting up application...")
     yield
-    # Shutdown: Clean up resources
     logger.info("Shutting down...")
 
 app = FastAPI(
@@ -28,13 +24,13 @@ app = FastAPI(
     lifespan=lifespan
 )
 
-# Configure CORS
+# FIXED CORS CONFIGURATION
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=settings.BACKEND_CORS_ORIGINS,
+    allow_origins=["http://localhost:3000"],  # Your React frontend URL
     allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_methods=["*"],  # Allow all methods including OPTIONS
+    allow_headers=["*"],  # Allow all headers
 )
 
 # Include routers
