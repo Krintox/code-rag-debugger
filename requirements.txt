@@ -15,6 +15,6 @@ pydantic==2.5.0
 pydantic-settings==2.1.0
 aiofiles==23.2.1
 watchdog==3.0.0
-huggingface-hub==0.16.4  # Add this specific version
+huggingface-hub==0.16.4
 supabase
-pinecone-client
+pinecone  # Changed from pinecone-client
