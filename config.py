@@ -1,7 +1,8 @@
 import os
 from pydantic_settings import BaseSettings
-from typing import List, Optional
+from typing import List, Optional, Union
 from dotenv import load_dotenv
+from pydantic import field_validator
 
 load_dotenv()
 
@@ -34,7 +35,14 @@ class Settings(BaseSettings):
     
     # CORS
     BACKEND_CORS_ORIGINS: List[str] = ["http://localhost:3000", "http://localhost:8000"]
-    
+
+    @field_validator("BACKEND_CORS_ORIGINS", mode="before")
+    def parse_cors_origins(cls, v: Union[str, List[str]]) -> List[str]:
+        if isinstance(v, str):
+            # allow comma-separated list in env
+            return [i.strip() for i in v.split(",") if i.strip()]
+        return v
+
     class Config:
         case_sensitive = True
 
