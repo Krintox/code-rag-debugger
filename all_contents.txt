@@ -71,35 +71,34 @@ load_dotenv()
 
 class Settings(BaseSettings):
     PROJECT_NAME: str = "RodeCeview"
-    
+
     # Database Configuration
     DATABASE_URL: str = os.getenv("DATABASE_URL", "")
     
     # Supabase Configuration
     SUPABASE_URL: str = os.getenv("SUPABASE_URL", "")
     SUPABASE_KEY: str = os.getenv("SUPABASE_KEY", "")
-    
+
     # Vector Database - Pinecone
     PINECONE_API_KEY: str = os.getenv("PINECONE_API_KEY", "")
     PINECONE_ENVIRONMENT: str = os.getenv("PINECONE_ENVIRONMENT", "")
     PINECONE_INDEX_NAME: str = os.getenv("PINECONE_INDEX_NAME", "code-review-index")
-    
-    # DeepInfra Configuration
-    DEEPINFRA_API_KEY: str = os.getenv("DEEPINFRA_API_KEY", "")
-    DEEPINFRA_MODEL: str = os.getenv("DEEPINFRA_MODEL", "meta-llama/Llama-2-70b-chat-hf")
+
+    # Gemini API Key (Replaces DeepInfra)
+    GEMINI_API_KEY: str = os.getenv("GEMINI_API_KEY", "")
     
     # Embedding Model
     EMBEDDING_MODEL: str = os.getenv("EMBEDDING_MODEL", "all-MiniLM-L6-v2")
-    
+
     # Git Configuration
     MAX_COMMIT_HISTORY: int = int(os.getenv("MAX_COMMIT_HISTORY", 1000))
     REPOSITORY_BASE_PATH: str = os.getenv("REPOSITORY_BASE_PATH", "./repositories")
-    
+
     # Security
     SECRET_KEY: str = os.getenv("SECRET_KEY", "your-secret-key-here")
     ALGORITHM: str = "HS256"
     ACCESS_TOKEN_EXPIRE_MINUTES: int = 60 * 24 * 7  # 7 days
-    
+
     # CORS
     BACKEND_CORS_ORIGINS: List[str] = ["http://localhost:3000", "http://localhost:8000", "https://rodeceview.vercel.app"]
 
@@ -114,6 +113,7 @@ class Settings(BaseSettings):
         case_sensitive = True
 
 settings = Settings()
+
 
 
 --- File: C:\Shashank\SaaS\code-rag-debugger\backend\docker-compose.yml ---
@@ -202,7 +202,7 @@ app = FastAPI(
 # FIXED CORS CONFIGURATION
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["https://rodeceview.vercel.app"],  # Your React frontend URL
+    allow_origins=["https://rodeceview.vercel.app", "http://localhost:3000"],  # Your React frontend URL
     allow_credentials=True,
     allow_methods=["*"],  # Allow all methods including OPTIONS
     allow_headers=["*"],  # Allow all headers
@@ -291,7 +291,7 @@ aiofiles==23.2.1
 watchdog==3.0.0
 huggingface-hub==0.16.4  # Add this specific version
 supabase
-pinecone
+pinecone-client
 
 
 --- File: C:\Shashank\SaaS\code-rag-debugger\backend\__init__.py ---
@@ -1014,151 +1014,50 @@ __all__ = [
 ]
 
 
---- File: C:\Shashank\SaaS\code-rag-debugger\backend\services\deepinfra_client.py ---
-
-import requests
-import json
-from typing import Dict, Any, List
-from config import settings
-import logging
-
-logger = logging.getLogger(__name__)
-
-class DeepInfraClient:
-    def __init__(self):
-        self.api_key = settings.DEEPINFRA_API_KEY
-        self.model = settings.DEEPINFRA_MODEL
-        self.base_url = "https://api.deepinfra.com/v1/inference"
-
-    def generate(self, prompt: str, context: List[str] = None, temperature: float = 0.1) -> str:
-        """Generate a response using the DeepInfra API"""
-        try:
-            # Build the full prompt with context
-            full_prompt = self._build_prompt(prompt, context)
-            
-            headers = {
-                "Authorization": f"Bearer {self.api_key}",
-                "Content-Type": "application/json"
-            }
-            
-            payload = {
-                "input": full_prompt,
-                "temperature": temperature,
-                "max_new_tokens": 1024,
-                "stop": ["</s>", "###"]
-            }
-            
-            response = requests.post(
-                f"{self.base_url}/{self.model}",
-                headers=headers,
-                json=payload,
-                timeout=120
-            )
-            
-            if response.status_code == 200:
-                result = response.json()
-                return result.get("results", [{}])[0].get("generated_text", "").strip()
-            else:
-                logger.error(f"DeepInfra API error: {response.status_code} - {response.text}")
-                return "Sorry, I couldn't process your request at this time."
-                
-        except requests.exceptions.RequestException as e:
-            logger.error(f"Request to DeepInfra failed: {e}")
-            return "Connection to the AI service failed. Please try again later."
-    
-    def _build_prompt(self, prompt: str, context: List[str] = None) -> str:
-        """Build a prompt with context for the model"""
-        if not context:
-            return prompt
-            
-        context_str = "\n".join([f"Context {i+1}: {ctx}" for i, ctx in enumerate(context)])
-        return f"""Based on the following context:
-
-{context_str}
-
-Please respond to this query: {prompt}
-
-Your response should be helpful, concise, and focused on solving the problem.
-
-Response:"""
-    
-    def generate_embeddings(self, texts: List[str]) -> List[List[float]]:
-        """Generate embeddings using DeepInfra"""
-        try:
-            headers = {
-                "Authorization": f"Bearer {self.api_key}",
-                "Content-Type": "application/json"
-            }
-            
-            payload = {
-                "inputs": texts,
-                "truncate": True
-            }
-            
-            response = requests.post(
-                f"{self.base_url}/sentence-transformers/all-MiniLM-L6-v2",
-                headers=headers,
-                json=payload,
-                timeout=30
-            )
-            
-            if response.status_code == 200:
-                result = response.json()
-                return result
-            else:
-                logger.error(f"DeepInfra embeddings error: {response.status_code} - {response.text}")
-                return []
-                
-        except requests.exceptions.RequestException as e:
-            logger.error(f"Request to DeepInfra embeddings failed: {e}")
-            return []
-
-deepinfra_client = DeepInfraClient()
-
-
 --- File: C:\Shashank\SaaS\code-rag-debugger\backend\services\embedding_service.py ---
 
-import pinecone
+from pinecone import Pinecone
 import requests
-from typing import List, Dict, Any, Optional
+from typing import List, Dict, Any
 from config import settings
 import logging
 import uuid
 from datetime import datetime
-import json
 
 logger = logging.getLogger(__name__)
 
 class EmbeddingService:
     def __init__(self):
-        # Initialize Pinecone with the correct v3 syntax
-        self.pc = pinecone.Pinecone(
-            api_key=settings.PINECONE_API_KEY
-        )
+        # Initialize Pinecone client correctly (v3+)
+        try:
+            self.pc = Pinecone(api_key=settings.PINECONE_API_KEY)
+            logger.info("Pinecone client initialized successfully")
+        except Exception as e:
+            logger.error(f"Failed to initialize Pinecone client: {e}")
+            raise
         
-        # Create or connect to index
         self.index_name = settings.PINECONE_INDEX_NAME
-        
-        # Check if index exists
-        if self.index_name not in self.pc.list_indexes().names():
-            # Create index if it doesn't exist
-            self.pc.create_index(
-                name=self.index_name,
-                dimension=384,  # Dimension for all-MiniLM-L6-v2
-                metric="cosine",
-                spec=pinecone.ServerlessSpec(
-                    cloud="aws",  # or "gcp"
-                    region=settings.PINECONE_ENVIRONMENT.split('-')[0]  # Extract region from env
+        # Check if index exists; create if not
+        existing_indexes = [idx["name"] for idx in self.pc.list_indexes()]
+        if self.index_name not in existing_indexes:
+            try:
+                self.pc.create_index(
+                    name=self.index_name,
+                    dimension=384,  # Dimension for all-MiniLM-L6-v2 embeddings
+                    metric="cosine"
                 )
-            )
+                logger.info(f"Created Pinecone index '{self.index_name}'")
+            except Exception as e:
+                logger.error(f"Failed to create Pinecone index: {e}")
+                raise
         
         self.index = self.pc.Index(self.index_name)
 
     def get_embeddings(self, texts: List[str]) -> List[List[float]]:
-        """Generate embeddings using DeepInfra's sentence-transformers endpoint"""
+        """Generate embeddings using Gemini API's sentence-transformers endpoint"""
         try:
             headers = {
-                "Authorization": f"Bearer {settings.DEEPINFRA_API_KEY}",
+                "Authorization": f"Bearer {settings.GEMINI_API_KEY}",
                 "Content-Type": "application/json"
             }
             
@@ -1168,7 +1067,7 @@ class EmbeddingService:
             }
             
             response = requests.post(
-                "https://api.deepinfra.com/v1/inference/sentence-transformers/all-MiniLM-L6-v2",
+                "https://api.gemini.com/v1/inference/sentence-transformers/all-MiniLM-L6-v2",  # Replace with actual Gemini embeddings endpoint
                 headers=headers,
                 json=payload,
                 timeout=30
@@ -1177,30 +1076,26 @@ class EmbeddingService:
             if response.status_code == 200:
                 return response.json()
             else:
-                logger.error(f"DeepInfra embeddings error: {response.status_code} - {response.text}")
-                # Fallback: return random embeddings (for testing only)
+                logger.error(f"Gemini embeddings error: {response.status_code} - {response.text}")
+                # Fallback: return dummy embeddings for testing
                 return [[0.1] * 384 for _ in texts]
                 
         except Exception as e:
             logger.error(f"Failed to get embeddings: {e}")
-            # Fallback: return random embeddings (for testing only)
             return [[0.1] * 384 for _ in texts]
 
     def create_collection(self, collection_name: str):
-        """In Pinecone, we use namespaces instead of collections"""
+        """In Pinecone v3, use namespaces instead of collections"""
         return collection_name
 
     def add_documents(self, collection_name: str, documents: List[Dict[str, Any]]):
         """Add documents to Pinecone namespace"""
         try:
-            # Extract texts and metadata
             texts = [doc["content"] for doc in documents]
             metadatas = [doc["metadata"] for doc in documents]
             
-            # Generate embeddings
             embeddings = self.get_embeddings(texts)
             
-            # Prepare vectors for Pinecone
             vectors = []
             for i, (embedding, metadata) in enumerate(zip(embeddings, metadatas)):
                 vectors.append({
@@ -1214,7 +1109,6 @@ class EmbeddingService:
                     }
                 })
             
-            # Upsert to Pinecone with namespace as collection_name
             self.index.upsert(vectors=vectors, namespace=collection_name)
             
             logger.info(f"Added {len(documents)} documents to namespace {collection_name}")
@@ -1226,10 +1120,8 @@ class EmbeddingService:
     def query_collection(self, collection_name: str, query_text: str, n_results: int = 5) -> List[Dict[str, Any]]:
         """Query a namespace for similar documents"""
         try:
-            # Generate embedding for query
             query_embedding = self.get_embeddings([query_text])[0]
             
-            # Query Pinecone
             results = self.index.query(
                 vector=query_embedding,
                 top_k=n_results,
@@ -1238,14 +1130,13 @@ class EmbeddingService:
                 include_values=False
             )
             
-            # Format results
             formatted_results = []
-            for match in results.matches:
+            for match in results["matches"]:
                 formatted_results.append({
-                    "content": match.metadata.get("text", ""),
-                    "metadata": {k: v for k, v in match.metadata.items() if k != "text"},
-                    "distance": match.score,
-                    "id": match.id
+                    "content": match["metadata"].get("text", ""),
+                    "metadata": {k: v for k, v in match["metadata"].items() if k != "text"},
+                    "distance": match["score"],
+                    "id": match["id"]
                 })
             
             return formatted_results
@@ -1260,8 +1151,12 @@ class EmbeddingService:
         documents = []
         
         for commit in commits:
-            # Create a document for each commit
-            content = f"Commit: {commit['hash']}\nAuthor: {commit['author']}\nMessage: {commit['message']}\nFiles: {', '.join(commit['files_changed'])}"
+            content = (
+                f"Commit: {commit['hash']}\n"
+                f"Author: {commit['author']}\n"
+                f"Message: {commit['message']}\n"
+                f"Files: {', '.join(commit['files_changed'])}"
+            )
             
             documents.append({
                 "content": content,
@@ -1277,11 +1172,81 @@ class EmbeddingService:
         self.add_documents(collection_name, documents)
 
     def index_code_files(self, project_id: int, repo_path: str, file_patterns: List[str] = None):
-        """Index code files for a project"""
-        # Implementation for code file indexing
+        """Index code files for a project (to be implemented if needed)"""
         pass
 
 embedding_service = EmbeddingService()
+
+
+
+--- File: C:\Shashank\SaaS\code-rag-debugger\backend\services\gemini_client.py ---
+
+import requests
+import logging
+from typing import List
+from config import settings
+
+logger = logging.getLogger(__name__)
+
+class GeminiClient:
+    def __init__(self):
+        self.api_key = settings.GEMINI_API_KEY
+        self.base_url = "https://api.gemini.com/v1"  # Replace with actual Gemini API base URL
+        # Adjust model or endpoints as per Gemini API docs if needed
+
+    def generate(self, prompt: str, context: List[str] = None, temperature: float = 0.1) -> str:
+        """Generate a response using Gemini API"""
+        try:
+            full_prompt = self._build_prompt(prompt, context)
+
+            headers = {
+                "Authorization": f"Bearer {self.api_key}",
+                "Content-Type": "application/json"
+            }
+
+            payload = {
+                "prompt": full_prompt,
+                "temperature": temperature,
+                # Add other Gemini-specific params if necessary
+            }
+
+            response = requests.post(
+                f"{self.base_url}/generate",  # adjust path based on Gemini API spec
+                headers=headers,
+                json=payload,
+                timeout=120
+            )
+
+            if response.status_code == 200:
+                result = response.json()
+                # Adjust to parse Gemini response data correctly
+                return result.get("text", "").strip()
+            else:
+                logger.error(f"Gemini API error: {response.status_code} - {response.text}")
+                return "Sorry, I couldn't process your request at this time."
+
+        except requests.exceptions.RequestException as e:
+            logger.error(f"Request to Gemini API failed: {e}")
+            return "Connection to the AI service failed. Please try again later."
+
+    def _build_prompt(self, prompt: str, context: List[str] = None) -> str:
+        """Build a prompt incorporating context"""
+        if not context:
+            return prompt
+
+        context_str = "\n".join([f"Context {i+1}: {ctx}" for i, ctx in enumerate(context)])
+        return f"""Based on the following context:
+
+{context_str}
+
+Please respond to this query: {prompt}
+
+Your response should be helpful, concise, and focused on solving the problem.
+
+Response:"""
+
+gemini_client = GeminiClient()
+
 
 
 --- File: C:\Shashank\SaaS\code-rag-debugger\backend\services\git_service.py ---
@@ -1412,7 +1377,7 @@ git_service = GitService()
 
 from typing import List, Dict, Any
 from .retrieval_service import retrieval_service
-from .deepinfra_client import deepinfra_client
+from .gemini_client import gemini_client
 import logging
 
 logger = logging.getLogger(__name__)
@@ -1441,9 +1406,9 @@ class RAGService:
                 additional_context
             )
             
-            # Step 3: Generate response using DeepInfra
+            # Step 3: Generate response using Gemini
             prompt = self._build_debug_prompt(error_message, context)
-            response = deepinfra_client.generate(prompt, context)
+            response = gemini_client.generate(prompt, context)
             
             # Step 4: Calculate confidence (simplified)
             confidence = self._calculate_confidence(similar_errors, response)
@@ -1617,14 +1582,14 @@ from .git_service import git_service
 from .embedding_service import embedding_service
 from .retrieval_service import retrieval_service
 from .rag_service import rag_service
-from .deepinfra_client import deepinfra_client
+from .gemini_client import gemini_client
 
 __all__ = [
     "git_service",
     "embedding_service",
     "retrieval_service", 
     "rag_service",
-    "deepinfra_client"
+    "gemini_client"
 ]
 
 

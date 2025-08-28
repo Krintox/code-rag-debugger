@@ -1,6 +1,6 @@
 from typing import List, Dict, Any
 from .retrieval_service import retrieval_service
-from .deepinfra_client import deepinfra_client
+from .gemini_client import gemini_client
 import logging
 
 logger = logging.getLogger(__name__)
@@ -29,9 +29,9 @@ class RAGService:
                 additional_context
             )
             
-            # Step 3: Generate response using DeepInfra
+            # Step 3: Generate response using Gemini
             prompt = self._build_debug_prompt(error_message, context)
-            response = deepinfra_client.generate(prompt, context)
+            response = gemini_client.generate(prompt, context)
             
             # Step 4: Calculate confidence (simplified)
             confidence = self._calculate_confidence(similar_errors, response)

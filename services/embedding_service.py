@@ -19,7 +19,6 @@ class EmbeddingService:
             raise
         
         self.index_name = settings.PINECONE_INDEX_NAME
-
         # Check if index exists; create if not
         existing_indexes = [idx["name"] for idx in self.pc.list_indexes()]
         if self.index_name not in existing_indexes:
@@ -37,10 +36,10 @@ class EmbeddingService:
         self.index = self.pc.Index(self.index_name)
 
     def get_embeddings(self, texts: List[str]) -> List[List[float]]:
-        """Generate embeddings using DeepInfra's sentence-transformers endpoint"""
+        """Generate embeddings using Gemini API's sentence-transformers endpoint"""
         try:
             headers = {
-                "Authorization": f"Bearer {settings.DEEPINFRA_API_KEY}",
+                "Authorization": f"Bearer {settings.GEMINI_API_KEY}",
                 "Content-Type": "application/json"
             }
             
@@ -50,7 +49,7 @@ class EmbeddingService:
             }
             
             response = requests.post(
-                "https://api.deepinfra.com/v1/inference/sentence-transformers/all-MiniLM-L6-v2",
+                "https://api.gemini.com/v1/inference/sentence-transformers/all-MiniLM-L6-v2",  # Replace with actual Gemini embeddings endpoint
                 headers=headers,
                 json=payload,
                 timeout=30
@@ -59,7 +58,7 @@ class EmbeddingService:
             if response.status_code == 200:
                 return response.json()
             else:
-                logger.error(f"DeepInfra embeddings error: {response.status_code} - {response.text}")
+                logger.error(f"Gemini embeddings error: {response.status_code} - {response.text}")
                 # Fallback: return dummy embeddings for testing
                 return [[0.1] * 384 for _ in texts]
                 
@@ -157,6 +156,5 @@ class EmbeddingService:
     def index_code_files(self, project_id: int, repo_path: str, file_patterns: List[str] = None):
         """Index code files for a project (to be implemented if needed)"""
         pass
-
 
 embedding_service = EmbeddingService()
