@@ -6,39 +6,46 @@ import logging
 
 logger = logging.getLogger(__name__)
 
-class OllamaClient:
+class DeepInfraClient:
     def __init__(self):
-        self.base_url = settings.OLLAMA_BASE_URL
-        self.model = settings.OLLAMA_MODEL
+        self.api_key = settings.DEEPINFRA_API_KEY
+        self.model = settings.DEEPINFRA_MODEL
+        self.base_url = "https://api.deepinfra.com/v1/inference"
 
     def generate(self, prompt: str, context: List[str] = None, temperature: float = 0.1) -> str:
-        """Generate a response using the Ollama API"""
+        """Generate a response using the DeepInfra API"""
         try:
             # Build the full prompt with context
             full_prompt = self._build_prompt(prompt, context)
             
+            headers = {
+                "Authorization": f"Bearer {self.api_key}",
+                "Content-Type": "application/json"
+            }
+            
             payload = {
-                "model": self.model,
-                "prompt": full_prompt,
+                "input": full_prompt,
                 "temperature": temperature,
-                "stream": False
+                "max_new_tokens": 1024,
+                "stop": ["</s>", "###"]
             }
             
             response = requests.post(
-                f"{self.base_url}/api/generate",
+                f"{self.base_url}/{self.model}",
+                headers=headers,
                 json=payload,
-                timeout=120  # Longer timeout for generation
+                timeout=120
             )
             
             if response.status_code == 200:
                 result = response.json()
-                return result.get("response", "")
+                return result.get("results", [{}])[0].get("generated_text", "").strip()
             else:
-                logger.error(f"Ollama API error: {response.status_code} - {response.text}")
+                logger.error(f"DeepInfra API error: {response.status_code} - {response.text}")
                 return "Sorry, I couldn't process your request at this time."
                 
         except requests.exceptions.RequestException as e:
-            logger.error(f"Request to Ollama failed: {e}")
+            logger.error(f"Request to DeepInfra failed: {e}")
             return "Connection to the AI service failed. Please try again later."
     
     def _build_prompt(self, prompt: str, context: List[str] = None) -> str:
@@ -53,31 +60,39 @@ class OllamaClient:
 
 Please respond to this query: {prompt}
 
-Your response should be helpful, concise, and focused on solving the problem."""
+Your response should be helpful, concise, and focused on solving the problem.
+
+Response:"""
     
     def generate_embeddings(self, texts: List[str]) -> List[List[float]]:
-        """Generate embeddings using Ollama"""
+        """Generate embeddings using DeepInfra"""
         try:
+            headers = {
+                "Authorization": f"Bearer {self.api_key}",
+                "Content-Type": "application/json"
+            }
+            
             payload = {
-                "model": self.model,
-                "prompts": texts
+                "inputs": texts,
+                "truncate": True
             }
             
             response = requests.post(
-                f"{self.base_url}/api/embeddings",
+                f"{self.base_url}/sentence-transformers/all-MiniLM-L6-v2",
+                headers=headers,
                 json=payload,
                 timeout=30
             )
             
             if response.status_code == 200:
                 result = response.json()
-                return [embedding.get("embedding", []) for embedding in result.get("embeddings", [])]
+                return result
             else:
-                logger.error(f"Ollama embeddings error: {response.status_code} - {response.text}")
+                logger.error(f"DeepInfra embeddings error: {response.status_code} - {response.text}")
                 return []
                 
         except requests.exceptions.RequestException as e:
-            logger.error(f"Request to Ollama embeddings failed: {e}")
+            logger.error(f"Request to DeepInfra embeddings failed: {e}")
             return []
 
-ollama_client = OllamaClient()
+deepinfra_client = DeepInfraClient()

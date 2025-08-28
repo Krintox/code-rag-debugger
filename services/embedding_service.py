@@ -1,84 +1,131 @@
-import chromadb
-from chromadb.config import Settings
-from chromadb.utils import embedding_functions
-import numpy as np
+from pinecone import Pinecone
+import requests
 from typing import List, Dict, Any
 from config import settings
 import logging
 import uuid
+from datetime import datetime
 
 logger = logging.getLogger(__name__)
 
 class EmbeddingService:
     def __init__(self):
-        # Initialize ChromaDB client with telemetry disabled
-        self.chroma_client = chromadb.PersistentClient(
-            path=settings.CHROMA_DB_PATH,
-            settings=Settings(anonymized_telemetry=False)
-        )
+        # Initialize Pinecone client correctly (v3+)
+        try:
+            self.pc = Pinecone(api_key=settings.PINECONE_API_KEY)
+            logger.info("Pinecone client initialized successfully")
+        except Exception as e:
+            logger.error(f"Failed to initialize Pinecone client: {e}")
+            raise
         
-        # Use Chroma's default embedding function
-        self.embedding_function = embedding_functions.DefaultEmbeddingFunction()
+        self.index_name = settings.PINECONE_INDEX_NAME
+
+        # Check if index exists; create if not
+        existing_indexes = [idx["name"] for idx in self.pc.list_indexes()]
+        if self.index_name not in existing_indexes:
+            try:
+                self.pc.create_index(
+                    name=self.index_name,
+                    dimension=384,  # Dimension for all-MiniLM-L6-v2 embeddings
+                    metric="cosine"
+                )
+                logger.info(f"Created Pinecone index '{self.index_name}'")
+            except Exception as e:
+                logger.error(f"Failed to create Pinecone index: {e}")
+                raise
+        
+        self.index = self.pc.Index(self.index_name)
+
+    def get_embeddings(self, texts: List[str]) -> List[List[float]]:
+        """Generate embeddings using DeepInfra's sentence-transformers endpoint"""
+        try:
+            headers = {
+                "Authorization": f"Bearer {settings.DEEPINFRA_API_KEY}",
+                "Content-Type": "application/json"
+            }
+            
+            payload = {
+                "inputs": texts,
+                "truncate": True
+            }
+            
+            response = requests.post(
+                "https://api.deepinfra.com/v1/inference/sentence-transformers/all-MiniLM-L6-v2",
+                headers=headers,
+                json=payload,
+                timeout=30
+            )
+            
+            if response.status_code == 200:
+                return response.json()
+            else:
+                logger.error(f"DeepInfra embeddings error: {response.status_code} - {response.text}")
+                # Fallback: return dummy embeddings for testing
+                return [[0.1] * 384 for _ in texts]
+                
+        except Exception as e:
+            logger.error(f"Failed to get embeddings: {e}")
+            return [[0.1] * 384 for _ in texts]
 
     def create_collection(self, collection_name: str):
-        """Create a new collection in ChromaDB"""
-        try:
-            return self.chroma_client.get_or_create_collection(
-                name=collection_name,
-                embedding_function=self.embedding_function,
-                metadata={"hnsw:space": "cosine"}
-            )
-        except Exception as e:
-            logger.error(f"Failed to create collection {collection_name}: {e}")
-            raise
+        """In Pinecone v3, use namespaces instead of collections"""
+        return collection_name
 
     def add_documents(self, collection_name: str, documents: List[Dict[str, Any]]):
-        """Add documents to a collection with embeddings"""
+        """Add documents to Pinecone namespace"""
         try:
-            collection = self.create_collection(collection_name)
-            
-            # Extract texts and metadata
             texts = [doc["content"] for doc in documents]
             metadatas = [doc["metadata"] for doc in documents]
-            ids = [str(uuid.uuid4()) for _ in documents]
             
-            # Add to collection - Chroma will handle embeddings automatically
-            collection.add(
-                documents=texts,
-                metadatas=metadatas,
-                ids=ids
-            )
+            embeddings = self.get_embeddings(texts)
             
-            logger.info(f"Added {len(documents)} documents to collection {collection_name}")
+            vectors = []
+            for i, (embedding, metadata) in enumerate(zip(embeddings, metadatas)):
+                vectors.append({
+                    "id": str(uuid.uuid4()),
+                    "values": embedding,
+                    "metadata": {
+                        **metadata,
+                        "text": texts[i],
+                        "collection": collection_name,
+                        "timestamp": datetime.now().isoformat()
+                    }
+                })
+            
+            self.index.upsert(vectors=vectors, namespace=collection_name)
+            
+            logger.info(f"Added {len(documents)} documents to namespace {collection_name}")
             
         except Exception as e:
-            logger.error(f"Failed to add documents to collection {collection_name}: {e}")
+            logger.error(f"Failed to add documents to namespace {collection_name}: {e}")
             raise
 
     def query_collection(self, collection_name: str, query_text: str, n_results: int = 5) -> List[Dict[str, Any]]:
-        """Query a collection for similar documents"""
+        """Query a namespace for similar documents"""
         try:
-            collection = self.create_collection(collection_name)
+            query_embedding = self.get_embeddings([query_text])[0]
             
-            # Query the collection
-            results = collection.query(
-                query_texts=[query_text],
-                n_results=n_results
+            results = self.index.query(
+                vector=query_embedding,
+                top_k=n_results,
+                namespace=collection_name,
+                include_metadata=True,
+                include_values=False
             )
             
-            # Format results
             formatted_results = []
-            for i in range(len(results["documents"][0])):
+            for match in results["matches"]:
                 formatted_results.append({
-                    "content": results["documents"][0][i],
-                    "metadata": results["metadatas"][0][i],
-                    "distance": results["distances"][0][i]
+                    "content": match["metadata"].get("text", ""),
+                    "metadata": {k: v for k, v in match["metadata"].items() if k != "text"},
+                    "distance": match["score"],
+                    "id": match["id"]
                 })
             
             return formatted_results
             
         except Exception as e:
-            logger.error(f"Failed to query collection {collection_name}: {e}")
+            logger.error(f"Failed to query namespace {collection_name}: {e}")
             return []
 
     def index_commit_history(self, project_id: int, commits: List[Dict[str, Any]]):
@@ -87,8 +134,12 @@ class EmbeddingService:
         documents = []
         
         for commit in commits:
-            # Create a document for each commit
-            content = f"Commit: {commit['hash']}\nAuthor: {commit['author']}\nMessage: {commit['message']}\nFiles: {', '.join(commit['files_changed'])}"
+            content = (
+                f"Commit: {commit['hash']}\n"
+                f"Author: {commit['author']}\n"
+                f"Message: {commit['message']}\n"
+                f"Files: {', '.join(commit['files_changed'])}"
+            )
             
             documents.append({
                 "content": content,
@@ -104,9 +155,8 @@ class EmbeddingService:
         self.add_documents(collection_name, documents)
 
     def index_code_files(self, project_id: int, repo_path: str, file_patterns: List[str] = None):
-        """Index code files for a project"""
-        # This would be implemented to parse and index code files
-        # For simplicity, we're not implementing the full file traversal here
+        """Index code files for a project (to be implemented if needed)"""
         pass
+
 
 embedding_service = EmbeddingService()

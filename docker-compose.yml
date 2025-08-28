@@ -1,36 +1,24 @@
 version: '3.8'
 services:
-  ollama:
-    image: ollama/ollama:latest
-    restart: always
-    ports:
-      - "11434:11434"
-    volumes:
-      - ollama-data:/root/.ollama
-    environment:
-      OLLAMA_HOST: 0.0.0.0
-
-  chroma:
-    image: chromadb/chroma:latest
-    restart: always
-    ports:
-      - "8001:8000"
-    volumes:
-      - chroma-data:/chroma
-
   backend:
     build: ./
     restart: always
     env_file:
       - .env
-    depends_on:
-      - ollama
-      - chroma
     ports:
       - "8000:8000"
     volumes:
       - ./repositories:/repositories
+      - ./logs:/app/logs  # Optional: for persistent logs
+    environment:
+      - PYTHONPATH=/app
+      - PYTHONUNBUFFERED=1
+    # Health check (optional)
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
 
-volumes:
-  ollama-data:
-  chroma-data:
+# Note: Removed ollama and chroma volumes since we're using external services
+# (DeepInfra API and Pinecone) that don't require local containers

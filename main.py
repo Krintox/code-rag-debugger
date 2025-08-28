@@ -27,7 +27,7 @@ app = FastAPI(
 # FIXED CORS CONFIGURATION
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["https://rodeceview.vercel.app"],  # Your React frontend URL
+    allow_origins=["https://rodeceview.vercel.app", "http://localhost:3000"],  # Your React frontend URL
     allow_credentials=True,
     allow_methods=["*"],  # Allow all methods including OPTIONS
     allow_headers=["*"],  # Allow all headers

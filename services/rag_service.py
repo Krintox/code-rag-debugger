@@ -1,6 +1,6 @@
 from typing import List, Dict, Any
 from .retrieval_service import retrieval_service
-from .ollama_client import ollama_client
+from .deepinfra_client import deepinfra_client
 import logging
 
 logger = logging.getLogger(__name__)
@@ -29,9 +29,9 @@ class RAGService:
                 additional_context
             )
             
-            # Step 3: Generate response using Ollama
+            # Step 3: Generate response using DeepInfra
             prompt = self._build_debug_prompt(error_message, context)
-            response = ollama_client.generate(prompt, context)
+            response = deepinfra_client.generate(prompt, context)
             
             # Step 4: Calculate confidence (simplified)
             confidence = self._calculate_confidence(similar_errors, response)
@@ -67,7 +67,7 @@ class RAGService:
         if similar_errors:
             context.append("Similar errors found in project history:")
             for error in similar_errors[:3]:  # Limit to top 3
-                context.append(f"- Commit {error['commit']['hash']}: {error['content']}")
+                context.append(f"- Commit {error['metadata'].get('hash', 'unknown')}: {error['content']}")
         
         # Add documentation
         if documentation:
@@ -116,7 +116,7 @@ Consider the following context from the project's history and documentation:
             return 0.3  # Low confidence if no similar errors found
         
         # Calculate average similarity of retrieved errors
-        avg_similarity = sum(error.get('similarity', 0) for error in similar_errors) / len(similar_errors)
+        avg_similarity = sum(error.get('distance', 0) for error in similar_errors) / len(similar_errors)
         
         # Adjust based on response quality (simplified)
         quality_indicator = 1.0 if any(keyword in response.lower() for keyword in ["fix", "solution", "try", "change"]) else 0.5

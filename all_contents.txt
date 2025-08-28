@@ -1,16 +1,33 @@
 
 --- File: C:\Shashank\SaaS\code-rag-debugger\backend\.env ---
 
-DATABASE_URL=
-SUPABASE_URL=
-SUPABASE_KEY=
-SECURITY_KEY=
+DATABASE_URL=postgresql://postgres:Bunny%401018@db.gmesbgksnfvl
+SUPABASE_URL=ht
+SUPABASE_KEY=sb_publi
+SECURITY_KEY=sb_
+ALGORITHM=HS256
+ACCESS_TOKEN_EXPIRE_MINUTES=10080
+GEMINI_API_KEY=A
+
+# DeepInfra Configuration
+DEEPINFRA_AP
+DEEPINFRA_MODEL=google/gemma-3-27b-it
+
+# Pinecone Configuration
+PINECONE_API_KEY=pcsk_6fGXP7_TUPAo5HTxovwnnHUeDR3w3LAs
+PINECONE_ENVIRONMENT=us-east-1  # e.g., "us-west1-gcp"
+PINECONE_INDEX_NAME=rodeceview
+
+
 OLLAMA_BASE_URL=http://localhost:11434
 OLLAMA_MODEL=gemma:2b
 REPOSITORY_BASE_PATH=./repositories
 CHROMA_DB_PATH=./chroma_db
 EMBEDDING_MODEL=all-MiniLM-L6-v2
-BACKEND_CORS_ORIGINS=["http://localhost:3000", "http://localhost:8000"]
+BACKEND_CORS_ORIGINS=["http://localhost:3000", "http://localhost:8000", "https://rodeceview.vercel.app"]
+
+# Git Configuration
+MAX_COMMIT_HISTORY=1000
 
 
 --- File: C:\Shashank\SaaS\code-rag-debugger\backend\.gitignore ---
@@ -46,8 +63,9 @@ yarn-error.log*
 
 import os
 from pydantic_settings import BaseSettings
-from typing import List, Optional
+from typing import List, Optional, Union
 from dotenv import load_dotenv
+from pydantic import field_validator
 
 load_dotenv()
 
@@ -61,13 +79,17 @@ class Settings(BaseSettings):
     SUPABASE_URL: str = os.getenv("SUPABASE_URL", "")
     SUPABASE_KEY: str = os.getenv("SUPABASE_KEY", "")
     
-    # Vector Database
-    CHROMA_DB_PATH: str = os.getenv("CHROMA_DB_PATH", "./chroma_db")
-    EMBEDDING_MODEL: str = os.getenv("EMBEDDING_MODEL", "all-MiniLM-L6-v2")
+    # Vector Database - Pinecone
+    PINECONE_API_KEY: str = os.getenv("PINECONE_API_KEY", "")
+    PINECONE_ENVIRONMENT: str = os.getenv("PINECONE_ENVIRONMENT", "")
+    PINECONE_INDEX_NAME: str = os.getenv("PINECONE_INDEX_NAME", "code-review-index")
     
-    # Ollama Configuration
-    OLLAMA_BASE_URL: str = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434")
-    OLLAMA_MODEL: str = os.getenv("OLLAMA_MODEL", "gemma:2b")
+    # DeepInfra Configuration
+    DEEPINFRA_API_KEY: str = os.getenv("DEEPINFRA_API_KEY", "")
+    DEEPINFRA_MODEL: str = os.getenv("DEEPINFRA_MODEL", "meta-llama/Llama-2-70b-chat-hf")
+    
+    # Embedding Model
+    EMBEDDING_MODEL: str = os.getenv("EMBEDDING_MODEL", "all-MiniLM-L6-v2")
     
     # Git Configuration
     MAX_COMMIT_HISTORY: int = int(os.getenv("MAX_COMMIT_HISTORY", 1000))
@@ -79,8 +101,15 @@ class Settings(BaseSettings):
     ACCESS_TOKEN_EXPIRE_MINUTES: int = 60 * 24 * 7  # 7 days
     
     # CORS
-    BACKEND_CORS_ORIGINS: List[str] = ["http://localhost:3000", "http://localhost:8000"]
-    
+    BACKEND_CORS_ORIGINS: List[str] = ["http://localhost:3000", "http://localhost:8000", "https://rodeceview.vercel.app"]
+
+    @field_validator("BACKEND_CORS_ORIGINS", mode="before")
+    def parse_cors_origins(cls, v: Union[str, List[str]]) -> List[str]:
+        if isinstance(v, str):
+            # allow comma-separated list in env
+            return [i.strip() for i in v.split(",") if i.strip()]
+        return v
+
     class Config:
         case_sensitive = True
 
@@ -91,41 +120,28 @@ settings = Settings()
 
 version: '3.8'
 services:
-  ollama:
-    image: ollama/ollama:latest
-    restart: always
-    ports:
-      - "11434:11434"
-    volumes:
-      - ollama-data:/root/.ollama
-    environment:
-      OLLAMA_HOST: 0.0.0.0
-
-  chroma:
-    image: chromadb/chroma:latest
-    restart: always
-    ports:
-      - "8000:8000"
-    volumes:
-      - chroma-data:/chroma
-
   backend:
     build: ./
     restart: always
     env_file:
       - .env
-    depends_on:
-      - ollama
-      - chroma
     ports:
-      - "3000:3000"
+      - "8000:8000"
     volumes:
       - ./repositories:/repositories
+      - ./logs:/app/logs  # Optional: for persistent logs
+    environment:
+      - PYTHONPATH=/app
+      - PYTHONUNBUFFERED=1
+    # Health check (optional)
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
 
-volumes:
-  ollama-data:
-  chroma-data:
-
+# Note: Removed ollama and chroma volumes since we're using external services
+# (DeepInfra API and Pinecone) that don't require local containers
 
 
 --- File: C:\Shashank\SaaS\code-rag-debugger\backend\Dockerfile ---
@@ -149,11 +165,10 @@ RUN pip install --no-cache-dir -r requirements.txt
 COPY . .
 
 # Expose port
-EXPOSE 3000
+EXPOSE 8000
 
 # Start the app with uvicorn
-CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "3000"]
-
+CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000"]
 
 
 --- File: C:\Shashank\SaaS\code-rag-debugger\backend\main.py ---
@@ -184,10 +199,10 @@ app = FastAPI(
     lifespan=lifespan
 )
 
-# Configure CORS - FIXED CONFIGURATION
+# FIXED CORS CONFIGURATION
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:3000"],  # Your React frontend URL
+    allow_origins=["https://rodeceview.vercel.app"],  # Your React frontend URL
     allow_credentials=True,
     allow_methods=["*"],  # Allow all methods including OPTIONS
     allow_headers=["*"],  # Allow all headers
@@ -276,6 +291,7 @@ aiofiles==23.2.1
 watchdog==3.0.0
 huggingface-hub==0.16.4  # Add this specific version
 supabase
+pinecone
 
 
 --- File: C:\Shashank\SaaS\code-rag-debugger\backend\__init__.py ---
@@ -812,7 +828,7 @@ logger = logging.getLogger(__name__)
 @router.options("/")
 async def options_projects():
     return Response(headers={
-        "Access-Control-Allow-Origin": "http://localhost:3000",
+        "Access-Control-Allow-Origin": "https://rodeceview.vercel.app",
         "Access-Control-Allow-Methods": "POST, GET, OPTIONS",
         "Access-Control-Allow-Headers": "Content-Type",
     })
@@ -820,7 +836,7 @@ async def options_projects():
 @router.options("/{project_id}")
 async def options_project(project_id: int):
     return Response(headers={
-        "Access-Control-Allow-Origin": "http://localhost:3000",
+        "Access-Control-Allow-Origin": "https://rodeceview.vercel.app",
         "Access-Control-Allow-Methods": "GET, OPTIONS",
         "Access-Control-Allow-Headers": "Content-Type",
     })
@@ -828,7 +844,7 @@ async def options_project(project_id: int):
 @router.options("/{project_id}/refresh")
 async def options_refresh(project_id: int):
     return Response(headers={
-        "Access-Control-Allow-Origin": "http://localhost:3000",
+        "Access-Control-Allow-Origin": "https://rodeceview.vercel.app",
         "Access-Control-Allow-Methods": "POST, OPTIONS",
         "Access-Control-Allow-Headers": "Content-Type",
     })
@@ -836,7 +852,7 @@ async def options_refresh(project_id: int):
 @router.options("/{project_id}/commits")
 async def options_commits(project_id: int):
     return Response(headers={
-        "Access-Control-Allow-Origin": "http://localhost:3000",
+        "Access-Control-Allow-Origin": "https://rodeceview.vercel.app",
         "Access-Control-Allow-Methods": "GET, OPTIONS",
         "Access-Control-Allow-Headers": "Content-Type",
     })
@@ -998,89 +1014,244 @@ __all__ = [
 ]
 
 
+--- File: C:\Shashank\SaaS\code-rag-debugger\backend\services\deepinfra_client.py ---
+
+import requests
+import json
+from typing import Dict, Any, List
+from config import settings
+import logging
+
+logger = logging.getLogger(__name__)
+
+class DeepInfraClient:
+    def __init__(self):
+        self.api_key = settings.DEEPINFRA_API_KEY
+        self.model = settings.DEEPINFRA_MODEL
+        self.base_url = "https://api.deepinfra.com/v1/inference"
+
+    def generate(self, prompt: str, context: List[str] = None, temperature: float = 0.1) -> str:
+        """Generate a response using the DeepInfra API"""
+        try:
+            # Build the full prompt with context
+            full_prompt = self._build_prompt(prompt, context)
+            
+            headers = {
+                "Authorization": f"Bearer {self.api_key}",
+                "Content-Type": "application/json"
+            }
+            
+            payload = {
+                "input": full_prompt,
+                "temperature": temperature,
+                "max_new_tokens": 1024,
+                "stop": ["</s>", "###"]
+            }
+            
+            response = requests.post(
+                f"{self.base_url}/{self.model}",
+                headers=headers,
+                json=payload,
+                timeout=120
+            )
+            
+            if response.status_code == 200:
+                result = response.json()
+                return result.get("results", [{}])[0].get("generated_text", "").strip()
+            else:
+                logger.error(f"DeepInfra API error: {response.status_code} - {response.text}")
+                return "Sorry, I couldn't process your request at this time."
+                
+        except requests.exceptions.RequestException as e:
+            logger.error(f"Request to DeepInfra failed: {e}")
+            return "Connection to the AI service failed. Please try again later."
+    
+    def _build_prompt(self, prompt: str, context: List[str] = None) -> str:
+        """Build a prompt with context for the model"""
+        if not context:
+            return prompt
+            
+        context_str = "\n".join([f"Context {i+1}: {ctx}" for i, ctx in enumerate(context)])
+        return f"""Based on the following context:
+
+{context_str}
+
+Please respond to this query: {prompt}
+
+Your response should be helpful, concise, and focused on solving the problem.
+
+Response:"""
+    
+    def generate_embeddings(self, texts: List[str]) -> List[List[float]]:
+        """Generate embeddings using DeepInfra"""
+        try:
+            headers = {
+                "Authorization": f"Bearer {self.api_key}",
+                "Content-Type": "application/json"
+            }
+            
+            payload = {
+                "inputs": texts,
+                "truncate": True
+            }
+            
+            response = requests.post(
+                f"{self.base_url}/sentence-transformers/all-MiniLM-L6-v2",
+                headers=headers,
+                json=payload,
+                timeout=30
+            )
+            
+            if response.status_code == 200:
+                result = response.json()
+                return result
+            else:
+                logger.error(f"DeepInfra embeddings error: {response.status_code} - {response.text}")
+                return []
+                
+        except requests.exceptions.RequestException as e:
+            logger.error(f"Request to DeepInfra embeddings failed: {e}")
+            return []
+
+deepinfra_client = DeepInfraClient()
+
+
 --- File: C:\Shashank\SaaS\code-rag-debugger\backend\services\embedding_service.py ---
 
-import chromadb
-from chromadb.config import Settings
-from chromadb.utils import embedding_functions
-import numpy as np
-from typing import List, Dict, Any
+import pinecone
+import requests
+from typing import List, Dict, Any, Optional
 from config import settings
 import logging
 import uuid
+from datetime import datetime
+import json
 
 logger = logging.getLogger(__name__)
 
 class EmbeddingService:
     def __init__(self):
-        # Initialize ChromaDB client with telemetry disabled
-        self.chroma_client = chromadb.PersistentClient(
-            path=settings.CHROMA_DB_PATH,
-            settings=Settings(anonymized_telemetry=False)
+        # Initialize Pinecone with the correct v3 syntax
+        self.pc = pinecone.Pinecone(
+            api_key=settings.PINECONE_API_KEY
         )
         
-        # Use Chroma's default embedding function
-        self.embedding_function = embedding_functions.DefaultEmbeddingFunction()
+        # Create or connect to index
+        self.index_name = settings.PINECONE_INDEX_NAME
+        
+        # Check if index exists
+        if self.index_name not in self.pc.list_indexes().names():
+            # Create index if it doesn't exist
+            self.pc.create_index(
+                name=self.index_name,
+                dimension=384,  # Dimension for all-MiniLM-L6-v2
+                metric="cosine",
+                spec=pinecone.ServerlessSpec(
+                    cloud="aws",  # or "gcp"
+                    region=settings.PINECONE_ENVIRONMENT.split('-')[0]  # Extract region from env
+                )
+            )
+        
+        self.index = self.pc.Index(self.index_name)
+
+    def get_embeddings(self, texts: List[str]) -> List[List[float]]:
+        """Generate embeddings using DeepInfra's sentence-transformers endpoint"""
+        try:
+            headers = {
+                "Authorization": f"Bearer {settings.DEEPINFRA_API_KEY}",
+                "Content-Type": "application/json"
+            }
+            
+            payload = {
+                "inputs": texts,
+                "truncate": True
+            }
+            
+            response = requests.post(
+                "https://api.deepinfra.com/v1/inference/sentence-transformers/all-MiniLM-L6-v2",
+                headers=headers,
+                json=payload,
+                timeout=30
+            )
+            
+            if response.status_code == 200:
+                return response.json()
+            else:
+                logger.error(f"DeepInfra embeddings error: {response.status_code} - {response.text}")
+                # Fallback: return random embeddings (for testing only)
+                return [[0.1] * 384 for _ in texts]
+                
+        except Exception as e:
+            logger.error(f"Failed to get embeddings: {e}")
+            # Fallback: return random embeddings (for testing only)
+            return [[0.1] * 384 for _ in texts]
 
     def create_collection(self, collection_name: str):
-        """Create a new collection in ChromaDB"""
-        try:
-            return self.chroma_client.get_or_create_collection(
-                name=collection_name,
-                embedding_function=self.embedding_function,
-                metadata={"hnsw:space": "cosine"}
-            )
-        except Exception as e:
-            logger.error(f"Failed to create collection {collection_name}: {e}")
-            raise
+        """In Pinecone, we use namespaces instead of collections"""
+        return collection_name
 
     def add_documents(self, collection_name: str, documents: List[Dict[str, Any]]):
-        """Add documents to a collection with embeddings"""
+        """Add documents to Pinecone namespace"""
         try:
-            collection = self.create_collection(collection_name)
-            
             # Extract texts and metadata
             texts = [doc["content"] for doc in documents]
             metadatas = [doc["metadata"] for doc in documents]
-            ids = [str(uuid.uuid4()) for _ in documents]
             
-            # Add to collection - Chroma will handle embeddings automatically
-            collection.add(
-                documents=texts,
-                metadatas=metadatas,
-                ids=ids
-            )
+            # Generate embeddings
+            embeddings = self.get_embeddings(texts)
             
-            logger.info(f"Added {len(documents)} documents to collection {collection_name}")
+            # Prepare vectors for Pinecone
+            vectors = []
+            for i, (embedding, metadata) in enumerate(zip(embeddings, metadatas)):
+                vectors.append({
+                    "id": str(uuid.uuid4()),
+                    "values": embedding,
+                    "metadata": {
+                        **metadata,
+                        "text": texts[i],
+                        "collection": collection_name,
+                        "timestamp": datetime.now().isoformat()
+                    }
+                })
+            
+            # Upsert to Pinecone with namespace as collection_name
+            self.index.upsert(vectors=vectors, namespace=collection_name)
+            
+            logger.info(f"Added {len(documents)} documents to namespace {collection_name}")
             
         except Exception as e:
-            logger.error(f"Failed to add documents to collection {collection_name}: {e}")
+            logger.error(f"Failed to add documents to namespace {collection_name}: {e}")
             raise
 
     def query_collection(self, collection_name: str, query_text: str, n_results: int = 5) -> List[Dict[str, Any]]:
-        """Query a collection for similar documents"""
+        """Query a namespace for similar documents"""
         try:
-            collection = self.create_collection(collection_name)
+            # Generate embedding for query
+            query_embedding = self.get_embeddings([query_text])[0]
             
-            # Query the collection
-            results = collection.query(
-                query_texts=[query_text],
-                n_results=n_results
+            # Query Pinecone
+            results = self.index.query(
+                vector=query_embedding,
+                top_k=n_results,
+                namespace=collection_name,
+                include_metadata=True,
+                include_values=False
             )
             
             # Format results
             formatted_results = []
-            for i in range(len(results["documents"][0])):
+            for match in results.matches:
                 formatted_results.append({
-                    "content": results["documents"][0][i],
-                    "metadata": results["metadatas"][0][i],
-                    "distance": results["distances"][0][i]
+                    "content": match.metadata.get("text", ""),
+                    "metadata": {k: v for k, v in match.metadata.items() if k != "text"},
+                    "distance": match.score,
+                    "id": match.id
                 })
             
             return formatted_results
             
         except Exception as e:
-            logger.error(f"Failed to query collection {collection_name}: {e}")
+            logger.error(f"Failed to query namespace {collection_name}: {e}")
             return []
 
     def index_commit_history(self, project_id: int, commits: List[Dict[str, Any]]):
@@ -1107,8 +1278,7 @@ class EmbeddingService:
 
     def index_code_files(self, project_id: int, repo_path: str, file_patterns: List[str] = None):
         """Index code files for a project"""
-        # This would be implemented to parse and index code files
-        # For simplicity, we're not implementing the full file traversal here
+        # Implementation for code file indexing
         pass
 
 embedding_service = EmbeddingService()
@@ -1238,98 +1408,11 @@ class GitService:
 git_service = GitService()
 
 
---- File: C:\Shashank\SaaS\code-rag-debugger\backend\services\ollama_client.py ---
-
-import requests
-import json
-from typing import Dict, Any, List
-from config import settings
-import logging
-
-logger = logging.getLogger(__name__)
-
-class OllamaClient:
-    def __init__(self):
-        self.base_url = settings.OLLAMA_BASE_URL
-        self.model = settings.OLLAMA_MODEL
-
-    def generate(self, prompt: str, context: List[str] = None, temperature: float = 0.1) -> str:
-        """Generate a response using the Ollama API"""
-        try:
-            # Build the full prompt with context
-            full_prompt = self._build_prompt(prompt, context)
-            
-            payload = {
-                "model": self.model,
-                "prompt": full_prompt,
-                "temperature": temperature,
-                "stream": False
-            }
-            
-            response = requests.post(
-                f"{self.base_url}/api/generate",
-                json=payload,
-                timeout=120  # Longer timeout for generation
-            )
-            
-            if response.status_code == 200:
-                result = response.json()
-                return result.get("response", "")
-            else:
-                logger.error(f"Ollama API error: {response.status_code} - {response.text}")
-                return "Sorry, I couldn't process your request at this time."
-                
-        except requests.exceptions.RequestException as e:
-            logger.error(f"Request to Ollama failed: {e}")
-            return "Connection to the AI service failed. Please try again later."
-    
-    def _build_prompt(self, prompt: str, context: List[str] = None) -> str:
-        """Build a prompt with context for the model"""
-        if not context:
-            return prompt
-            
-        context_str = "\n".join([f"Context {i+1}: {ctx}" for i, ctx in enumerate(context)])
-        return f"""Based on the following context:
-
-{context_str}
-
-Please respond to this query: {prompt}
-
-Your response should be helpful, concise, and focused on solving the problem."""
-    
-    def generate_embeddings(self, texts: List[str]) -> List[List[float]]:
-        """Generate embeddings using Ollama"""
-        try:
-            payload = {
-                "model": self.model,
-                "prompts": texts
-            }
-            
-            response = requests.post(
-                f"{self.base_url}/api/embeddings",
-                json=payload,
-                timeout=30
-            )
-            
-            if response.status_code == 200:
-                result = response.json()
-                return [embedding.get("embedding", []) for embedding in result.get("embeddings", [])]
-            else:
-                logger.error(f"Ollama embeddings error: {response.status_code} - {response.text}")
-                return []
-                
-        except requests.exceptions.RequestException as e:
-            logger.error(f"Request to Ollama embeddings failed: {e}")
-            return []
-
-ollama_client = OllamaClient()
-
-
 --- File: C:\Shashank\SaaS\code-rag-debugger\backend\services\rag_service.py ---
 
 from typing import List, Dict, Any
 from .retrieval_service import retrieval_service
-from .ollama_client import ollama_client
+from .deepinfra_client import deepinfra_client
 import logging
 
 logger = logging.getLogger(__name__)
@@ -1358,9 +1441,9 @@ class RAGService:
                 additional_context
             )
             
-            # Step 3: Generate response using Ollama
+            # Step 3: Generate response using DeepInfra
             prompt = self._build_debug_prompt(error_message, context)
-            response = ollama_client.generate(prompt, context)
+            response = deepinfra_client.generate(prompt, context)
             
             # Step 4: Calculate confidence (simplified)
             confidence = self._calculate_confidence(similar_errors, response)
@@ -1396,7 +1479,7 @@ class RAGService:
         if similar_errors:
             context.append("Similar errors found in project history:")
             for error in similar_errors[:3]:  # Limit to top 3
-                context.append(f"- Commit {error['commit']['hash']}: {error['content']}")
+                context.append(f"- Commit {error['metadata'].get('hash', 'unknown')}: {error['content']}")
         
         # Add documentation
         if documentation:
@@ -1445,7 +1528,7 @@ Consider the following context from the project's history and documentation:
             return 0.3  # Low confidence if no similar errors found
         
         # Calculate average similarity of retrieved errors
-        avg_similarity = sum(error.get('similarity', 0) for error in similar_errors) / len(similar_errors)
+        avg_similarity = sum(error.get('distance', 0) for error in similar_errors) / len(similar_errors)
         
         # Adjust based on response quality (simplified)
         quality_indicator = 1.0 if any(keyword in response.lower() for keyword in ["fix", "solution", "try", "change"]) else 0.5
@@ -1534,14 +1617,14 @@ from .git_service import git_service
 from .embedding_service import embedding_service
 from .retrieval_service import retrieval_service
 from .rag_service import rag_service
-from .ollama_client import ollama_client
+from .deepinfra_client import deepinfra_client
 
 __all__ = [
     "git_service",
     "embedding_service",
     "retrieval_service", 
     "rag_service",
-    "ollama_client"
+    "deepinfra_client"
 ]
 
 
