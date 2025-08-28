@@ -34,7 +34,7 @@ class Settings(BaseSettings):
     ACCESS_TOKEN_EXPIRE_MINUTES: int = 60 * 24 * 7  # 7 days
     
     # CORS
-    BACKEND_CORS_ORIGINS: List[str] = ["http://localhost:3000", "http://localhost:8000"]
+    BACKEND_CORS_ORIGINS: List[str] = ["http://localhost:3000", "http://localhost:8000", "https://rodeceview.vercel.app"]
 
     @field_validator("BACKEND_CORS_ORIGINS", mode="before")
     def parse_cors_origins(cls, v: Union[str, List[str]]) -> List[str]:

@@ -15,7 +15,7 @@ logger = logging.getLogger(__name__)
 @router.options("/")
 async def options_projects():
     return Response(headers={
-        "Access-Control-Allow-Origin": "http://localhost:3000",
+        "Access-Control-Allow-Origin": "https://rodeceview.vercel.app",
         "Access-Control-Allow-Methods": "POST, GET, OPTIONS",
         "Access-Control-Allow-Headers": "Content-Type",
     })
@@ -23,7 +23,7 @@ async def options_projects():
 @router.options("/{project_id}")
 async def options_project(project_id: int):
     return Response(headers={
-        "Access-Control-Allow-Origin": "http://localhost:3000",
+        "Access-Control-Allow-Origin": "https://rodeceview.vercel.app",
         "Access-Control-Allow-Methods": "GET, OPTIONS",
         "Access-Control-Allow-Headers": "Content-Type",
     })
@@ -31,7 +31,7 @@ async def options_project(project_id: int):
 @router.options("/{project_id}/refresh")
 async def options_refresh(project_id: int):
     return Response(headers={
-        "Access-Control-Allow-Origin": "http://localhost:3000",
+        "Access-Control-Allow-Origin": "https://rodeceview.vercel.app",
         "Access-Control-Allow-Methods": "POST, OPTIONS",
         "Access-Control-Allow-Headers": "Content-Type",
     })
@@ -39,7 +39,7 @@ async def options_refresh(project_id: int):
 @router.options("/{project_id}/commits")
 async def options_commits(project_id: int):
     return Response(headers={
-        "Access-Control-Allow-Origin": "http://localhost:3000",
+        "Access-Control-Allow-Origin": "https://rodeceview.vercel.app",
         "Access-Control-Allow-Methods": "GET, OPTIONS",
         "Access-Control-Allow-Headers": "Content-Type",
     })
