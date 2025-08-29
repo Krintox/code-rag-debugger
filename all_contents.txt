@@ -1,20 +1,20 @@
 
 --- File: C:\Shashank\SaaS\code-rag-debugger\backend\.env ---
 
-DATABASE_URL=postgresql://postgres:Bunny%401018@db.gmesbgksnfvlepjksgkt.
-SUPABASE_URL=https://gme
-SUPABASE_KEY=sb_publishable_5C
-SECURITY_KEY=sb_secret_l-
+DATABASE_URL=postgresql://postgres:Bunny%401018@db.gmesbgksnfvl
+SUPABASE_URL=ht
+SUPABASE_KEY=sb_publi
+SECURITY_KEY=sb_
 ALGORITHM=HS256
 ACCESS_TOKEN_EXPIRE_MINUTES=10080
-GEMINI_API_KEY=AIzaSyBzHE
+GEMINI_API_KEY=A
 
 # DeepInfra Configuration
-DEEPINFRA_API_KEY=WgP
+DEEPINFRA_AP
 DEEPINFRA_MODEL=google/gemma-3-27b-it
 
 # Pinecone Configuration
-PINECONE_API_KEY=pcsk_6fGXP7_TUPAo5HTxovwnnHUeDR3w3LAscD8jFX7uR
+PINECONE_API_KEY=pcsk_6fGXP7_TUPAo5HTxovwnnHUeDR3w3LAs
 PINECONE_ENVIRONMENT=us-east-1  # e.g., "us-west1-gcp"
 PINECONE_INDEX_NAME=rodeceview
 
@@ -179,8 +179,7 @@ from contextlib import asynccontextmanager
 import logging
 
 from config import settings
-import models
-from routers import projects, debug, history
+from routers import projects, debug, history, references
 
 # Set up logging
 logging.basicConfig(level=logging.INFO)
@@ -212,6 +211,7 @@ app.add_middleware(
 app.include_router(projects.router)
 app.include_router(debug.router)
 app.include_router(history.router)
+app.include_router(references.router)
 
 @app.get("/")
 async def root():
@@ -289,14 +289,104 @@ pydantic==2.5.0
 pydantic-settings==2.1.0
 aiofiles==23.2.1
 watchdog==3.0.0
-huggingface-hub==0.16.4  # Add this specific version
+huggingface-hub==0.16.4
 supabase
-pinecone-client
+pinecone  # Changed from pinecone-client
+tree_sitter
 
 
 --- File: C:\Shashank\SaaS\code-rag-debugger\backend\__init__.py ---
 
 
+
+
+--- File: C:\Shashank\SaaS\code-rag-debugger\backend\migrations\001_add_symbol_tables.sql ---
+
+-- Migration to add symbol and reference tables
+CREATE TABLE symbols (
+    id SERIAL PRIMARY KEY,
+    project_id INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+    symbol_name VARCHAR(512) NOT NULL,
+    symbol_type VARCHAR(50) NOT NULL CHECK (symbol_type IN ('function', 'class', 'method', 'constant', 'variable', 'module', 'import')),
+    language VARCHAR(50) NOT NULL,
+    file_path VARCHAR(1024) NOT NULL,
+    start_line INTEGER NOT NULL,
+    end_line INTEGER NOT NULL,
+    signature TEXT,
+    docstring TEXT,
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+    commit_hash VARCHAR(64),
+    token_count_estimate INTEGER DEFAULT 0,
+    usage_count INTEGER DEFAULT 0,
+    centrality_score FLOAT DEFAULT 0.0,
+    metadata JSONB DEFAULT '{}'::jsonb,
+    UNIQUE(project_id, file_path, symbol_name, start_line)
+);
+
+CREATE INDEX idx_symbols_project_id ON symbols(project_id);
+CREATE INDEX idx_symbols_file_path ON symbols(file_path);
+CREATE INDEX idx_symbols_symbol_name ON symbols(symbol_name);
+CREATE INDEX idx_symbols_symbol_type ON symbols(symbol_type);
+CREATE INDEX idx_symbols_language ON symbols(language);
+
+CREATE TABLE symbol_chunks (
+    id SERIAL PRIMARY KEY,
+    symbol_id INTEGER NOT NULL REFERENCES symbols(id) ON DELETE CASCADE,
+    chunk_index INTEGER NOT NULL,
+    content TEXT NOT NULL,
+    start_line INTEGER NOT NULL,
+    end_line INTEGER NOT NULL,
+    embedding_vector_id VARCHAR(256),
+    token_count INTEGER DEFAULT 0,
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE(symbol_id, chunk_index)
+);
+
+CREATE INDEX idx_symbol_chunks_symbol_id ON symbol_chunks(symbol_id);
+
+CREATE TABLE references (
+    id SERIAL PRIMARY KEY,
+    from_symbol_id INTEGER NOT NULL REFERENCES symbols(id) ON DELETE CASCADE,
+    to_symbol_id INTEGER NOT NULL REFERENCES symbols(id) ON DELETE CASCADE,
+    reference_type VARCHAR(50) NOT NULL CHECK (reference_type IN ('call', 'import', 'inheritance', 'usage', 'implementation')),
+    file_path VARCHAR(1024) NOT NULL,
+    line INTEGER NOT NULL,
+    context_snippet TEXT,
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE(from_symbol_id, to_symbol_id, reference_type, file_path, line)
+);
+
+CREATE INDEX idx_references_from_symbol ON references(from_symbol_id);
+CREATE INDEX idx_references_to_symbol ON references(to_symbol_id);
+CREATE INDEX idx_references_reference_type ON references(reference_type);
+
+CREATE TABLE symbol_embeddings_metadata (
+    id SERIAL PRIMARY KEY,
+    symbol_id INTEGER NOT NULL REFERENCES symbols(id) ON DELETE CASCADE,
+    pinecone_id VARCHAR(256) NOT NULL,
+    namespace VARCHAR(256) NOT NULL,
+    embedding_dim INTEGER NOT NULL,
+    last_upserted_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE(symbol_id, namespace)
+);
+
+CREATE INDEX idx_symbol_embeddings_symbol ON symbol_embeddings_metadata(symbol_id);
+CREATE INDEX idx_symbol_embeddings_pinecone ON symbol_embeddings_metadata(pinecone_id);
+
+CREATE TABLE indexing_jobs (
+    id SERIAL PRIMARY KEY,
+    project_id INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+    status VARCHAR(50) NOT NULL CHECK (status IN ('pending', 'processing', 'completed', 'failed')),
+    started_at TIMESTAMP WITH TIME ZONE,
+    finished_at TIMESTAMP WITH TIME ZONE,
+    stats JSONB DEFAULT '{}'::jsonb,
+    last_error TEXT,
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE INDEX idx_indexing_jobs_project ON indexing_jobs(project_id);
+CREATE INDEX idx_indexing_jobs_status ON indexing_jobs(status);
 
 
 --- File: C:\Shashank\SaaS\code-rag-debugger\backend\migrations\fix_null_dates.py ---
@@ -493,6 +583,121 @@ class CRUDFeedback(CRUDBase):
             logger.error(f"Error getting feedback by debug query: {e}")
             return []
 
+# Add these methods to the existing CRUDBase class
+
+class CRUDSymbol(CRUDBase):
+    def __init__(self):
+        super().__init__("symbols")
+
+    def get_by_file_and_line(self, project_id: int, file_path: str, start_line: int, end_line: int = None) -> List[Dict[str, Any]]:
+        """Get symbols by file and line range"""
+        try:
+            supabase = get_db()
+            query = supabase.table("symbols").select("*").eq("project_id", project_id).eq("file_path", file_path)
+            
+            if end_line:
+                query = query.gte("start_line", start_line).lte("end_line", end_line)
+            else:
+                query = query.eq("start_line", start_line)
+                
+            result = query.execute()
+            return result.data
+        except Exception as e:
+            logger.error(f"Error getting symbols by file and line: {e}")
+            return []
+
+    def get_by_unique(self, project_id: int, file_path: str, symbol_name: str, start_line: int) -> Optional[Dict[str, Any]]:
+        """Get symbol by unique combination"""
+        try:
+            supabase = get_db()
+            result = supabase.table("symbols").select("*").eq("project_id", project_id).eq("file_path", file_path).eq("symbol_name", symbol_name).eq("start_line", start_line).execute()
+            return result.data[0] if result.data else None
+        except Exception as e:
+            logger.error(f"Error getting symbol by unique: {e}")
+            return None
+
+    def get_by_project(self, project_id: int, skip: int = 0, limit: int = 100) -> List[Dict[str, Any]]:
+        """Get symbols by project"""
+        try:
+            supabase = get_db()
+            result = supabase.table("symbols").select("*").eq("project_id", project_id).range(skip, skip + limit - 1).execute()
+            return result.data
+        except Exception as e:
+            logger.error(f"Error getting symbols by project: {e}")
+            return []
+
+class CRUDSymbolChunk(CRUDBase):
+    def __init__(self):
+        super().__init__("symbol_chunks")
+
+    def get_by_symbol(self, symbol_id: int) -> List[Dict[str, Any]]:
+        """Get chunks by symbol ID"""
+        try:
+            supabase = get_db()
+            result = supabase.table("symbol_chunks").select("*").eq("symbol_id", symbol_id).execute()
+            return result.data
+        except Exception as e:
+            logger.error(f"Error getting symbol chunks: {e}")
+            return []
+
+class CRUDReference(CRUDBase):
+    def __init__(self):
+        super().__init__("references")
+
+    def get_by_symbol(self, symbol_id: int) -> List[Dict[str, Any]]:
+        """Get references by symbol ID"""
+        try:
+            supabase = get_db()
+            result = supabase.table("references").select("*").eq("from_symbol_id", symbol_id).execute()
+            return result.data
+        except Exception as e:
+            logger.error(f"Error getting references by symbol: {e}")
+            return []
+
+    def get_to_symbol(self, symbol_id: int) -> List[Dict[str, Any]]:
+        """Get references pointing to symbol ID"""
+        try:
+            supabase = get_db()
+            result = supabase.table("references").select("*").eq("to_symbol_id", symbol_id).execute()
+            return result.data
+        except Exception as e:
+            logger.error(f"Error getting references to symbol: {e}")
+            return []
+
+class CRUDSymbolEmbedding(CRUDBase):
+    def __init__(self):
+        super().__init__("symbol_embeddings_metadata")
+
+    def get_by_symbol(self, symbol_id: int) -> List[Dict[str, Any]]:
+        """Get embeddings by symbol ID"""
+        try:
+            supabase = get_db()
+            result = supabase.table("symbol_embeddings_metadata").select("*").eq("symbol_id", symbol_id).execute()
+            return result.data
+        except Exception as e:
+            logger.error(f"Error getting symbol embeddings: {e}")
+            return []
+
+class CRUDIndexingJob(CRUDBase):
+    def __init__(self):
+        super().__init__("indexing_jobs")
+
+    def get_by_project(self, project_id: int) -> List[Dict[str, Any]]:
+        """Get indexing jobs by project"""
+        try:
+            supabase = get_db()
+            result = supabase.table("indexing_jobs").select("*").eq("project_id", project_id).order("created_at", desc=True).execute()
+            return result.data
+        except Exception as e:
+            logger.error(f"Error getting indexing jobs: {e}")
+            return []
+
+# Add these to the existing CRUD instances
+symbol = CRUDSymbol()
+symbol_chunk = CRUDSymbolChunk()
+reference = CRUDReference()
+symbol_embedding = CRUDSymbolEmbedding()
+indexing_job = CRUDIndexingJob()
 project = CRUDProject()
 commit = CRUDCommit()
 feedback = CRUDFeedback()
@@ -666,6 +871,7 @@ class DebugQuery(BaseModel):
     file_path: Optional[str] = None
     additional_context: Optional[str] = None
     project_id: int
+    use_reference_pack: bool = True  # New parameter
 
 class DebugContext(BaseModel):
     commit: Optional[Commit] = None
@@ -709,6 +915,151 @@ class Feedback(FeedbackBase):
     class Config:
         from_attributes = True
 
+# Reference schemas - moved to avoid circular imports
+class DebugReferenceRequest(BaseModel):
+    project_id: int
+    error_snippet: str
+    file_path: str
+    start_line: Optional[int] = None
+    end_line: Optional[int] = None
+    token_budget: int = 4000
+    ranking_params: Optional[Dict[str, float]] = None
+
+# Forward references for symbol-related schemas
+class SymbolSearchResult(BaseModel):
+    symbol: 'Symbol'  # Forward reference
+    similarity: float
+    metadata: Dict[str, Any]
+
+class ReferenceWithSymbol(BaseModel):
+    reference: 'Reference'  # Forward reference
+    depth: int
+    symbol: 'Symbol'  # Forward reference
+
+# Import symbol models here to avoid circular imports
+from .symbol import Symbol, Reference
+
+# Update the forward references with actual classes
+SymbolSearchResult.update_forward_refs()
+ReferenceWithSymbol.update_forward_refs()
+
+
+--- File: C:\Shashank\SaaS\code-rag-debugger\backend\models\symbol.py ---
+
+from datetime import datetime
+from pydantic import BaseModel, Field
+from typing import List, Optional, Dict, Any
+from enum import Enum
+
+class SymbolType(str, Enum):
+    FUNCTION = "function"
+    CLASS = "class"
+    METHOD = "method"
+    CONSTANT = "constant"
+    VARIABLE = "variable"
+    MODULE = "module"
+    IMPORT = "import"
+
+class ReferenceType(str, Enum):
+    CALL = "call"
+    IMPORT = "import"
+    INHERITANCE = "inheritance"
+    USAGE = "usage"
+    IMPLEMENTATION = "implementation"
+
+class SymbolBase(BaseModel):
+    project_id: int
+    symbol_name: str
+    symbol_type: SymbolType
+    language: str
+    file_path: str
+    start_line: int
+    end_line: int
+    signature: Optional[str] = None
+    docstring: Optional[str] = None
+    commit_hash: Optional[str] = None
+    token_count_estimate: int = 0
+    usage_count: int = 0
+    centrality_score: float = 0.0
+    metadata: Dict[str, Any] = Field(default_factory=dict)
+
+class SymbolCreate(SymbolBase):
+    pass
+
+class Symbol(SymbolBase):
+    id: int
+    created_at: Optional[datetime] = None
+    updated_at: Optional[datetime] = None
+
+    class Config:
+        from_attributes = True
+
+class SymbolChunk(BaseModel):
+    id: Optional[int] = None
+    symbol_id: int
+    chunk_index: int
+    content: str
+    start_line: int
+    end_line: int
+    embedding_vector_id: Optional[str] = None
+    token_count: int = 0
+    created_at: Optional[datetime] = None
+
+    class Config:
+        from_attributes = True
+
+class Reference(BaseModel):
+    id: Optional[int] = None
+    from_symbol_id: int
+    to_symbol_id: int
+    reference_type: ReferenceType
+    file_path: str
+    line: int
+    context_snippet: Optional[str] = None
+    created_at: Optional[datetime] = None
+
+    class Config:
+        from_attributes = True
+
+class SymbolEmbeddingMetadata(BaseModel):
+    id: Optional[int] = None
+    symbol_id: int
+    pinecone_id: str
+    namespace: str
+    embedding_dim: int
+    last_upserted_at: Optional[datetime] = None
+
+    class Config:
+        from_attributes = True
+
+class IndexingJob(BaseModel):
+    id: Optional[int] = None
+    project_id: int
+    status: str
+    started_at: Optional[datetime] = None
+    finished_at: Optional[datetime] = None
+    stats: Dict[str, Any] = Field(default_factory=dict)
+    last_error: Optional[str] = None
+    created_at: Optional[datetime] = None
+
+    class Config:
+        from_attributes = True
+
+class ReferencePack(BaseModel):
+    symbol: Symbol
+    definition: str
+    references: List[Dict[str, Any]]
+    callers: List[Dict[str, Any]]
+    callees: List[Dict[str, Any]]
+    imports: List[Dict[str, Any]]
+    tests: List[Dict[str, Any]]
+    historical_fixes: List[Dict[str, Any]]
+    token_count: int
+    reasoning: str
+
+    class Config:
+        from_attributes = True
+
 
 --- File: C:\Shashank\SaaS\code-rag-debugger\backend\models\__init__.py ---
 
@@ -717,9 +1068,13 @@ from .models import Project, Commit, Feedback
 from . import schemas
 from . import crud
 
+# Import symbol models after other models to avoid circular imports
+from .symbol import Symbol, Reference, SymbolChunk, SymbolEmbeddingMetadata, IndexingJob, ReferencePack
+
 __all__ = [
     "get_db", 
     "Project", "Commit", "Feedback",
+    "Symbol", "Reference", "SymbolChunk", "SymbolEmbeddingMetadata", "IndexingJob", "ReferencePack",
     "schemas", "crud"
 ]
 
@@ -751,7 +1106,8 @@ def debug_code(query: schemas.DebugQuery):
         query.error_message,
         query.code_snippet,
         query.file_path,
-        query.additional_context
+        query.additional_context,
+        query.use_reference_pack
     )
     
     return result
@@ -1001,6 +1357,134 @@ def refresh_project(project_id: int):
 
 
 
+--- File: C:\Shashank\SaaS\code-rag-debugger\backend\routers\references.py ---
+
+from fastapi import APIRouter, Depends, HTTPException, status, BackgroundTasks
+from typing import List, Optional
+import logging
+
+from models import schemas
+from models import crud
+from workers.reference_indexer import reference_indexer
+from services.reference_service import reference_service
+
+router = APIRouter(prefix="/references", tags=["references"])
+logger = logging.getLogger(__name__)
+
+@router.post("/projects/{project_id}/index")
+async def index_project_references(
+    project_id: int, 
+    background_tasks: BackgroundTasks,
+    force_full_reindex: bool = False
+):
+    """Trigger reference indexing for a project"""
+    db_project = crud.project.get(project_id)
+    if db_project is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Project not found"
+        )
+    
+    # Run indexing in background
+    background_tasks.add_task(
+        reference_indexer.index_project_symbols,
+        project_id,
+        None,
+        None,
+        force_full_reindex
+    )
+    
+    return {"message": "Reference indexing started in background"}
+
+@router.get("/projects/{project_id}/symbols", response_model=List[schemas.Symbol])
+def get_project_symbols(
+    project_id: int,
+    skip: int = 0,
+    limit: int = 100,
+    symbol_type: Optional[str] = None,
+    file_path: Optional[str] = None
+):
+    """Get symbols for a project with optional filtering"""
+    db_project = crud.project.get(project_id)
+    if db_project is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Project not found"
+        )
+    
+    symbols = crud.symbol.get_by_project(project_id, skip, limit)
+    
+    # Apply filters
+    if symbol_type:
+        symbols = [s for s in symbols if s['symbol_type'] == symbol_type]
+    if file_path:
+        symbols = [s for s in symbols if s['file_path'] == file_path]
+    
+    return symbols
+
+@router.get("/symbols/{symbol_id}/references", response_model=List[schemas.Reference])
+def get_symbol_references(symbol_id: int, max_depth: int = 1, max_references: int = 50):
+    """Get references for a specific symbol"""
+    symbol = crud.symbol.get(symbol_id)
+    if symbol is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Symbol not found"
+        )
+    
+    references = reference_service.get_symbol_references(symbol_id, max_depth, max_references)
+    return references
+
+@router.post("/debug/reference-pack")
+def get_debug_reference_pack(
+    request: schemas.DebugReferenceRequest
+) -> schemas.ReferencePack:
+    """Get a reference pack for debugging"""
+    try:
+        # Resolve snippet to symbol
+        symbol_id = reference_service.resolve_snippet_to_symbol(
+            request.project_id,
+            request.file_path,
+            request.error_snippet,
+            (request.start_line, request.end_line) if request.start_line and request.end_line else None
+        )
+        
+        if not symbol_id:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Could not resolve symbol from the provided snippet"
+            )
+        
+        # Build reference pack
+        reference_pack = reference_service.build_reference_pack(
+            symbol_id,
+            request.token_budget,
+            request.ranking_params
+        )
+        
+        return reference_pack
+        
+    except Exception as e:
+        logger.error(f"Failed to build reference pack: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to build reference pack: {str(e)}"
+        )
+
+@router.get("/projects/{project_id}/indexing-jobs", response_model=List[schemas.IndexingJob])
+def get_indexing_jobs(project_id: int):
+    """Get indexing jobs for a project"""
+    db_project = crud.project.get(project_id)
+    if db_project is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Project not found"
+        )
+    
+    jobs = crud.indexing_job.get_by_project(project_id)
+    return jobs
+
+
 --- File: C:\Shashank\SaaS\code-rag-debugger\backend\routers\__init__.py ---
 
 from .projects import router as projects_router
@@ -1174,6 +1658,24 @@ class EmbeddingService:
     def index_code_files(self, project_id: int, repo_path: str, file_patterns: List[str] = None):
         """Index code files for a project (to be implemented if needed)"""
         pass
+
+    # Add this method to the EmbeddingService class
+
+def upsert_symbol_embedding(self, namespace: str, chunk_id: int, embedding: List[float], metadata: Dict[str, Any]):
+    """Upsert a symbol embedding into Pinecone"""
+    try:
+        vector = {
+            "id": str(chunk_id),
+            "values": embedding,
+            "metadata": metadata
+        }
+        
+        self.index.upsert(vectors=[vector], namespace=namespace)
+        logger.info(f"Upserted symbol embedding {chunk_id} to namespace {namespace}")
+        
+    except Exception as e:
+        logger.error(f"Failed to upsert symbol embedding: {e}")
+        raise
 
 embedding_service = EmbeddingService()
 
@@ -1401,37 +1903,54 @@ class RAGService:
 
     def generate_debug_response(self, project_id: int, error_message: str, 
                               code_snippet: str = None, file_path: str = None, 
-                              additional_context: str = None) -> Dict[str, Any]:
-        """Generate a debug response using RAG"""
+                              additional_context: str = None,
+                              use_reference_pack: bool = True) -> Dict[str, Any]:
+        """Generate a debug response using RAG, optionally with reference packs"""
         try:
-            # Step 1: Retrieve relevant context
-            similar_errors = retrieval_service.retrieve_similar_errors(project_id, error_message)
-            documentation = retrieval_service.retrieve_relevant_documentation(project_id, error_message)
-            code_suggestions = retrieval_service.get_code_suggestions(project_id, error_message, code_snippet)
+            if use_reference_pack and code_snippet and file_path:
+                # Try to use reference pack for more precise context
+                try:
+                    from services.reference_service import reference_service
+                    
+                    # Resolve snippet to symbol and build reference pack
+                    symbol_id = reference_service.resolve_snippet_to_symbol(
+                        project_id, file_path, code_snippet
+                    )
+                    
+                    if symbol_id:
+                        reference_pack = reference_service.build_reference_pack(symbol_id)
+                        context = self._build_context_from_reference_pack(
+                            reference_pack, error_message, code_snippet, additional_context
+                        )
+                    else:
+                        # Fallback to traditional retrieval
+                        context = self._build_context_traditional(
+                            project_id, error_message, code_snippet, file_path, additional_context
+                        )
+                except Exception as e:
+                    logger.warning(f"Reference pack failed, falling back: {e}")
+                    context = self._build_context_traditional(
+                        project_id, error_message, code_snippet, file_path, additional_context
+                    )
+            else:
+                # Use traditional retrieval
+                context = self._build_context_traditional(
+                    project_id, error_message, code_snippet, file_path, additional_context
+                )
             
-            # Step 2: Build context for the LLM
-            context = self._build_context(
-                similar_errors, 
-                documentation, 
-                code_suggestions,
-                code_snippet,
-                file_path,
-                additional_context
-            )
-            
-            # Step 3: Generate response using Gemini
+            # Generate response using Gemini
             prompt = self._build_debug_prompt(error_message, context)
             response = gemini_client.generate(prompt, context)
             
-            # Step 4: Calculate confidence (simplified)
-            confidence = self._calculate_confidence(similar_errors, response)
+            # Calculate confidence
+            confidence = self._calculate_confidence(context, response)
             
             return {
                 "solution": response,
                 "context": {
-                    "similar_errors": similar_errors,
-                    "documentation": documentation,
-                    "code_suggestions": code_suggestions
+                    "similar_errors": context.get('similar_errors', []),
+                    "documentation": context.get('documentation', []),
+                    "code_suggestions": context.get('code_suggestions', [])
                 },
                 "confidence": confidence
             }
@@ -1444,46 +1963,61 @@ class RAGService:
                 "confidence": 0.0
             }
 
-    def _build_context(self, similar_errors: List[Dict[str, Any]], 
-                      documentation: List[Dict[str, Any]], 
-                      code_suggestions: List[str],
-                      code_snippet: str = None,
-                      file_path: str = None,
-                      additional_context: str = None) -> List[str]:
-        """Build context for the LLM from retrieved information"""
-        context = []
+    def _build_context_from_reference_pack(self, reference_pack, error_message: str,
+                                         code_snippet: str = None, additional_context: str = None) -> Dict[str, Any]:
+        """Build context from reference pack"""
+        context = {}
         
-        # Add similar errors
-        if similar_errors:
-            context.append("Similar errors found in project history:")
-            for error in similar_errors[:3]:  # Limit to top 3
-                context.append(f"- Commit {error['metadata'].get('hash', 'unknown')}: {error['content']}")
+        # Add reference pack information
+        context['reference_pack'] = {
+            'symbol_name': reference_pack.symbol.symbol_name,
+            'symbol_type': reference_pack.symbol.symbol_type,
+            'file_path': reference_pack.symbol.file_path,
+            'lines': f"{reference_pack.symbol.start_line}-{reference_pack.symbol.end_line}",
+            'definition': reference_pack.definition,
+            'references': reference_pack.references,
+            'callers': reference_pack.callers,
+            'callees': reference_pack.callees,
+            'imports': reference_pack.imports,
+            'tests': reference_pack.tests,
+            'historical_fixes': reference_pack.historical_fixes,
+            'token_count': reference_pack.token_count,
+            'reasoning': reference_pack.reasoning
+        }
         
-        # Add documentation
-        if documentation:
-            context.append("Relevant documentation:")
-            for doc in documentation[:2]:  # Limit to top 2
-                context.append(f"- {doc['content']}")
-        
-        # Add code suggestions
-        if code_suggestions:
-            context.append("General code suggestions:")
-            for suggestion in code_suggestions[:3]:  # Limit to top 3
-                context.append(f"- {suggestion}")
-        
-        # Add current code context
+        # Add current error context
+        context['error'] = error_message
         if code_snippet:
-            context.append(f"Current code snippet:\n{code_snippet}")
-        
-        if file_path:
-            context.append(f"File path: {file_path}")
-            
+            context['code_snippet'] = code_snippet
         if additional_context:
-            context.append(f"Additional context: {additional_context}")
+            context['additional_context'] = additional_context
+        
+        return context
+
+    def _build_context_traditional(self, project_id: int, error_message: str,
+                                 code_snippet: str = None, file_path: str = None,
+                                 additional_context: str = None) -> Dict[str, Any]:
+        """Traditional context building (existing implementation)"""
+        similar_errors = retrieval_service.retrieve_similar_errors(project_id, error_message)
+        documentation = retrieval_service.retrieve_relevant_documentation(project_id, error_message)
+        code_suggestions = retrieval_service.get_code_suggestions(project_id, error_message, code_snippet)
+        
+        context = {
+            'similar_errors': similar_errors,
+            'documentation': documentation,
+            'code_suggestions': code_suggestions
+        }
+        
+        if code_snippet:
+            context['code_snippet'] = code_snippet
+        if file_path:
+            context['file_path'] = file_path
+        if additional_context:
+            context['additional_context'] = additional_context
             
         return context
 
-    def _build_debug_prompt(self, error_message: str, context: List[str] = None) -> str:
+    def _build_debug_prompt(self, error_message: str, context: Dict[str, Any]) -> str:
         """Build a prompt for debugging"""
         base_prompt = f"""You are an expert software developer helping to debug an issue.
 
@@ -1494,14 +2028,67 @@ Please provide a helpful solution to fix this error. Be specific and provide cod
 Consider the following context from the project's history and documentation:
 """
         
-        if context:
-            context_str = "\n".join(context)
-            return f"{base_prompt}\n{context_str}\n\nSolution:"
-        else:
-            return f"{base_prompt}\n\nSolution:"
+        if 'reference_pack' in context:
+            # Use reference pack context
+            ref_pack = context['reference_pack']
+            context_str = f"""
+Symbol: {ref_pack['symbol_name']} ({ref_pack['symbol_type']})
+File: {ref_pack['file_path']}:{ref_pack['lines']}
 
-    def _calculate_confidence(self, similar_errors: List[Dict[str, Any]], response: str) -> float:
+Definition:
+{ref_pack['definition']}
+
+References found:
+{ref_pack['reasoning']}
+
+Additional context:
+"""
+            if 'code_snippet' in context:
+                context_str += f"\nCurrent code snippet:\n{context['code_snippet']}"
+            if 'additional_context' in context:
+                context_str += f"\nAdditional context: {context['additional_context']}"
+                
+            return f"{base_prompt}\n{context_str}\n\nSolution:"
+            
+        else:
+            # Use traditional context
+            context_parts = []
+            
+            if 'similar_errors' in context and context['similar_errors']:
+                context_parts.append("Similar errors found in project history:")
+                for error in context['similar_errors'][:3]:
+                    context_parts.append(f"- {error.get('content', '')[:100]}...")
+            
+            if 'documentation' in context and context['documentation']:
+                context_parts.append("Relevant documentation:")
+                for doc in context['documentation'][:2]:
+                    context_parts.append(f"- {doc.get('content', '')[:100]}...")
+            
+            if 'code_suggestions' in context and context['code_suggestions']:
+                context_parts.append("General code suggestions:")
+                for suggestion in context['code_suggestions'][:3]:
+                    context_parts.append(f"- {suggestion}")
+            
+            if 'code_snippet' in context:
+                context_parts.append(f"Current code snippet:\n{context['code_snippet']}")
+            
+            if 'file_path' in context:
+                context_parts.append(f"File path: {context['file_path']}")
+                
+            if 'additional_context' in context:
+                context_parts.append(f"Additional context: {context['additional_context']}")
+            
+            context_str = "\n".join(context_parts)
+            return f"{base_prompt}\n{context_str}\n\nSolution:"
+
+    def _calculate_confidence(self, context: Dict[str, Any], response: str) -> float:
         """Calculate confidence score for the response"""
+        if 'reference_pack' in context:
+            # Higher confidence when using reference packs
+            return 0.8
+            
+        # Traditional confidence calculation
+        similar_errors = context.get('similar_errors', [])
         if not similar_errors:
             return 0.3  # Low confidence if no similar errors found
         
@@ -1514,6 +2101,464 @@ Consider the following context from the project's history and documentation:
         return min(0.9, avg_similarity * quality_indicator)
 
 rag_service = RAGService()
+
+
+--- File: C:\Shashank\SaaS\code-rag-debugger\backend\services\reference_ranking.py ---
+
+from typing import List, Dict, Any
+import numpy as np
+import logging
+from datetime import datetime, timedelta
+
+logger = logging.getLogger(__name__)
+
+class ReferenceRanking:
+    def __init__(self):
+        # Default ranking weights
+        self.default_weights = {
+            'semantic_similarity': 0.6,
+            'proximity': 0.2,
+            'recency': 0.1,
+            'usage': 0.08,
+            'test_boost': 0.02
+        }
+        
+        # Lambda for recency decay
+        self.recency_lambda = 0.1  # ~10 day half-life
+
+    def rank_references(self, reference_candidates: List[Dict[str, Any]], 
+                       error_embedding: List[float] = None,
+                       params: Dict[str, float] = None) -> List[Dict[str, Any]]:
+        """Rank reference candidates using multiple factors"""
+        if not reference_candidates:
+            return []
+        
+        weights = params or self.default_weights
+        
+        ranked_candidates = []
+        for candidate in reference_candidates:
+            score = self._calculate_score(candidate, error_embedding, weights)
+            ranked_candidates.append({
+                **candidate,
+                'ranking_score': score
+            })
+        
+        # Sort by score descending
+        ranked_candidates.sort(key=lambda x: x['ranking_score'], reverse=True)
+        return ranked_candidates
+
+    def _calculate_score(self, candidate: Dict[str, Any], 
+                        error_embedding: List[float], 
+                        weights: Dict[str, float]) -> float:
+        """Calculate composite ranking score"""
+        scores = {
+            'semantic_similarity': self._semantic_similarity_score(candidate, error_embedding),
+            'proximity': self._proximity_score(candidate),
+            'recency': self._recency_score(candidate),
+            'usage': self._usage_score(candidate),
+            'test_boost': self._test_boost_score(candidate)
+        }
+        
+        # Weighted sum
+        total_score = 0.0
+        for factor, weight in weights.items():
+            total_score += scores[factor] * weight
+        
+        return total_score
+
+    def _semantic_similarity_score(self, candidate: Dict[str, Any], 
+                                 error_embedding: List[float]) -> float:
+        """Calculate semantic similarity score"""
+        if not error_embedding or 'embedding' not in candidate:
+            return 0.5  # Neutral score if no embedding available
+        
+        try:
+            # Cosine similarity between error and candidate embeddings
+            candidate_embedding = candidate['embedding']
+            if not candidate_embedding or len(candidate_embedding) != len(error_embedding):
+                return 0.5
+                
+            dot_product = np.dot(error_embedding, candidate_embedding)
+            norm_a = np.linalg.norm(error_embedding)
+            norm_b = np.linalg.norm(candidate_embedding)
+            
+            if norm_a == 0 or norm_b == 0:
+                return 0.0
+                
+            return float(dot_product / (norm_a * norm_b))
+            
+        except Exception as e:
+            logger.error(f"Failed to calculate semantic similarity: {e}")
+            return 0.5
+
+    def _proximity_score(self, candidate: Dict[str, Any]) -> float:
+        """Calculate proximity score based on call distance"""
+        call_distance = candidate.get('call_distance', 2)  # Default to max distance
+        return 1.0 / (1.0 + call_distance)  # Inverse relationship
+
+    def _recency_score(self, candidate: Dict[str, Any]) -> float:
+        """Calculate recency score based on last modification"""
+        last_modified = candidate.get('last_modified')
+        if not last_modified:
+            return 0.5
+            
+        try:
+            if isinstance(last_modified, str):
+                last_modified = datetime.fromisoformat(last_modified.replace('Z', '+00:00'))
+            
+            days_since_modification = (datetime.now() - last_modified).days
+            return float(np.exp(-self.recency_lambda * days_since_modification))
+            
+        except Exception as e:
+            logger.error(f"Failed to calculate recency score: {e}")
+            return 0.5
+
+    def _usage_score(self, candidate: Dict[str, Any]) -> float:
+        """Calculate usage score based on usage count"""
+        usage_count = candidate.get('usage_count', 0)
+        return float(np.log(1 + usage_count) / 10.0)  # Log scaling, capped
+
+    def _test_boost_score(self, candidate: Dict[str, Any]) -> float:
+        """Calculate test boost score if candidate is a test"""
+        file_path = candidate.get('file_path', '')
+        is_test = any(test_indicator in file_path.lower() 
+                     for test_indicator in ['test', 'spec', 'testing'])
+        return 1.2 if is_test else 1.0
+
+    def update_weights_from_feedback(self, positive_examples: List[Dict[str, Any]],
+                                   negative_examples: List[Dict[str, Any]]):
+        """Update ranking weights based on user feedback"""
+        # Simple reinforcement learning approach
+        # This would be implemented based on collected feedback data
+        pass
+
+# Global ranking instance
+reference_ranking = ReferenceRanking()
+
+
+--- File: C:\Shashank\SaaS\code-rag-debugger\backend\services\reference_service.py ---
+
+from typing import List, Dict, Any, Optional
+import logging
+from models import crud
+from models.symbol import Symbol, Reference, ReferencePack
+from utils.ast_parsers import ast_parser
+from utils.lsp_client import lsp_client
+from services.embedding_service import embedding_service
+from services.retrieval_service import retrieval_service
+import re
+
+logger = logging.getLogger(__name__)
+
+class ReferenceService:
+    def __init__(self):
+        pass
+
+    def find_enclosing_symbol(self, project_id: int, file_path: str, 
+                            start_line: Optional[int] = None, 
+                            end_line: Optional[int] = None,
+                            snippet_text: Optional[str] = None) -> Optional[Dict[str, Any]]:
+        """Find the symbol that encloses the given line range or snippet"""
+        try:
+            # Try to get from database first
+            if start_line is not None:
+                symbols = crud.symbol.get_by_file_and_line(project_id, file_path, start_line, end_line)
+                if symbols:
+                    return symbols[0]
+            
+            # If not found in DB or no line info, use AST parsing
+            repo_path = self._get_repo_path(project_id)
+            if not repo_path:
+                return None
+                
+            file_content = self._read_file_content(repo_path, file_path)
+            if not file_content:
+                return None
+                
+            # Parse symbols from file
+            language = self._detect_language(file_path)
+            symbols = self._parse_symbols(language, file_content, file_path)
+            
+            if start_line is not None:
+                # Find by line range
+                return ast_parser.find_enclosing_symbol_by_line(symbols, start_line)
+            elif snippet_text:
+                # Find by semantic similarity
+                return self.semantic_find_symbols(project_id, snippet_text, file_path, top_k=1)[0]
+                
+        except Exception as e:
+            logger.error(f"Failed to find enclosing symbol: {e}")
+            return None
+
+    def semantic_find_symbols(self, project_id: int, query_snippet: str, 
+                             file_path: Optional[str] = None, top_k: int = 10) -> List[Dict[str, Any]]:
+        """Find symbols semantically similar to the query snippet"""
+        try:
+            # Query Pinecone for similar symbols
+            namespace = f"project_{project_id}_symbols"
+            results = embedding_service.query_collection(namespace, query_snippet, top_k)
+            
+            symbols = []
+            for result in results:
+                symbol_id = result['metadata'].get('symbol_id')
+                if symbol_id:
+                    symbol = crud.symbol.get(symbol_id)
+                    if symbol:
+                        symbols.append({
+                            'symbol': symbol,
+                            'similarity': 1 - result['distance'],
+                            'metadata': result['metadata']
+                        })
+            
+            # Filter by file path if specified
+            if file_path:
+                symbols = [s for s in symbols if s['symbol']['file_path'] == file_path]
+                
+            return sorted(symbols, key=lambda x: x['similarity'], reverse=True)[:top_k]
+            
+        except Exception as e:
+            logger.error(f"Failed to semantically find symbols: {e}")
+            return []
+
+    def get_symbol_references(self, symbol_id: int, max_depth: int = 1, 
+                            max_references: int = 50) -> List[Dict[str, Any]]:
+        """Get references for a symbol with graph traversal"""
+        try:
+            symbol = crud.symbol.get(symbol_id)
+            if not symbol:
+                return []
+                
+            references = []
+            visited = set()
+            
+            def traverse(current_symbol_id, depth):
+                if depth > max_depth or len(references) >= max_references:
+                    return
+                    
+                if current_symbol_id in visited:
+                    return
+                    
+                visited.add(current_symbol_id)
+                
+                # Get direct references
+                direct_refs = crud.reference.get_by_symbol(current_symbol_id)
+                for ref in direct_refs:
+                    references.append({
+                        'reference': ref,
+                        'depth': depth,
+                        'symbol': crud.symbol.get(ref['to_symbol_id'])
+                    })
+                    
+                    # Recursively traverse if within depth limit
+                    if depth < max_depth:
+                        traverse(ref['to_symbol_id'], depth + 1)
+            
+            traverse(symbol_id, 0)
+            return references
+            
+        except Exception as e:
+            logger.error(f"Failed to get symbol references: {e}")
+            return []
+
+    def build_reference_pack(self, symbol_id: int, token_budget: int = 4000,
+                           ranking_params: Optional[Dict[str, float]] = None) -> ReferencePack:
+        """Build a compact context package for debugging"""
+        try:
+            symbol = crud.symbol.get(symbol_id)
+            if not symbol:
+                raise ValueError(f"Symbol {symbol_id} not found")
+                
+            # Get symbol definition
+            definition = self._get_symbol_definition(symbol)
+            
+            # Get references
+            references = self.get_symbol_references(symbol_id, max_depth=2)
+            
+            # Get historical fixes
+            historical_fixes = self._get_historical_fixes(symbol['project_id'], symbol['symbol_name'])
+            
+            # Rank and select snippets within token budget
+            selected_snippets = self._rank_and_select_snippets(
+                definition, references, historical_fixes, token_budget, ranking_params
+            )
+            
+            return ReferencePack(
+                symbol=symbol,
+                definition=selected_snippets['definition'],
+                references=selected_snippets['references'],
+                callers=selected_snippets['callers'],
+                callees=selected_snippets['callees'],
+                imports=selected_snippets['imports'],
+                tests=selected_snippets['tests'],
+                historical_fixes=selected_snippets['historical_fixes'],
+                token_count=selected_snippets['total_tokens'],
+                reasoning=selected_snippets['reasoning']
+            )
+            
+        except Exception as e:
+            logger.error(f"Failed to build reference pack: {e}")
+            raise
+
+    def resolve_snippet_to_symbol(self, project_id: int, file_path: str, 
+                                snippet_text: str, line_range: Optional[tuple] = None) -> Optional[int]:
+        """Resolve a code snippet to a specific symbol"""
+        try:
+            # First try line-based resolution
+            if line_range:
+                start_line, end_line = line_range
+                symbol = self.find_enclosing_symbol(project_id, file_path, start_line, end_line)
+                if symbol:
+                    return symbol['id']
+            
+            # Fallback to semantic search
+            results = self.semantic_find_symbols(project_id, snippet_text, file_path, top_k=1)
+            if results:
+                return results[0]['symbol']['id']
+                
+            return None
+            
+        except Exception as e:
+            logger.error(f"Failed to resolve snippet to symbol: {e}")
+            return None
+
+    def _get_symbol_definition(self, symbol: Dict[str, Any]) -> Dict[str, Any]:
+        """Get the full definition of a symbol"""
+        repo_path = self._get_repo_path(symbol['project_id'])
+        file_content = self._read_file_content(repo_path, symbol['file_path'])
+        
+        if file_content and symbol['start_line'] and symbol['end_line']:
+            lines = file_content.split('\n')
+            definition = '\n'.join(lines[symbol['start_line']-1:symbol['end_line']])
+            
+            return {
+                'content': definition,
+                'file_path': symbol['file_path'],
+                'start_line': symbol['start_line'],
+                'end_line': symbol['end_line'],
+                'token_count': self._estimate_tokens(definition)
+            }
+        
+        return {'content': '', 'token_count': 0}
+
+    def _get_historical_fixes(self, project_id: int, symbol_name: str) -> List[Dict[str, Any]]:
+        """Get historical fixes related to this symbol"""
+        # Use retrieval service to find similar errors/fixes
+        error_query = f"fix {symbol_name} error bug"
+        similar_errors = retrieval_service.retrieve_similar_errors(project_id, error_query, n_results=5)
+        
+        fixes = []
+        for error in similar_errors:
+            fixes.append({
+                'commit_hash': error['metadata'].get('hash'),
+                'message': error['content'],
+                'similarity': error.get('similarity', 0.0)
+            })
+        
+        return fixes
+
+    def _rank_and_select_snippets(self, definition: Dict[str, Any], references: List[Dict[str, Any]],
+                                historical_fixes: List[Dict[str, Any]], token_budget: int,
+                                ranking_params: Optional[Dict[str, float]]) -> Dict[str, Any]:
+        """Rank and select snippets within token budget"""
+        # Implementation of ranking algorithm
+        # This would use the scoring formula mentioned in the architecture
+        selected = {
+            'definition': definition,
+            'references': [],
+            'callers': [],
+            'callees': [],
+            'imports': [],
+            'tests': [],
+            'historical_fixes': [],
+            'total_tokens': definition['token_count'],
+            'reasoning': 'Prioritized definition and direct references'
+        }
+        
+        # Simple greedy selection for now
+        # TODO: Implement proper ranking algorithm
+        for ref in references:
+            ref_content = self._get_reference_content(ref)
+            token_count = self._estimate_tokens(ref_content)
+            
+            if selected['total_tokens'] + token_count <= token_budget:
+                selected['references'].append({
+                    'content': ref_content,
+                    'reference_type': ref['reference']['reference_type'],
+                    'token_count': token_count
+                })
+                selected['total_tokens'] += token_count
+        
+        return selected
+
+    def _get_reference_content(self, reference: Dict[str, Any]) -> str:
+        """Get content for a reference"""
+        repo_path = self._get_repo_path(reference['symbol']['project_id'])
+        file_content = self._read_file_content(repo_path, reference['reference']['file_path'])
+        
+        if file_content:
+            lines = file_content.split('\n')
+            # Get context around the reference line
+            start_line = max(0, reference['reference']['line'] - 5)
+            end_line = min(len(lines), reference['reference']['line'] + 5)
+            return '\n'.join(lines[start_line:end_line])
+        
+        return ""
+
+    def _estimate_tokens(self, text: str) -> int:
+        """Estimate token count using simple approximation"""
+        return len(text.split())  # 1 token ≈ 1 word
+
+    def _get_repo_path(self, project_id: int) -> Optional[str]:
+        """Get repository path for a project"""
+        project = crud.project.get(project_id)
+        if project:
+            return f"./repositories/{project['name']}"
+        return None
+
+    def _read_file_content(self, repo_path: str, file_path: str) -> Optional[str]:
+        """Read file content from repository"""
+        try:
+            full_path = f"{repo_path}/{file_path}"
+            with open(full_path, 'r', encoding='utf-8') as f:
+                return f.read()
+        except Exception as e:
+            logger.error(f"Failed to read file {file_path}: {e}")
+            return None
+
+    def _detect_language(self, file_path: str) -> str:
+        """Detect programming language from file extension"""
+        ext_map = {
+            '.py': 'python',
+            '.js': 'javascript', '.jsx': 'javascript',
+            '.ts': 'typescript', '.tsx': 'typescript',
+            '.java': 'java',
+            '.cpp': 'cpp', '.cc': 'cpp', '.cxx': 'cpp', '.h': 'cpp', '.hpp': 'cpp',
+            '.go': 'go',
+            '.rs': 'rust'
+        }
+        
+        ext = '.' + file_path.split('.')[-1].lower()
+        return ext_map.get(ext, 'unknown')
+
+    def _parse_symbols(self, language: str, file_content: str, file_path: str) -> List[Dict[str, Any]]:
+        """Parse symbols from file content using appropriate parser"""
+        if language == 'python':
+            return ast_parser.parse_python_symbols(file_content, file_path)
+        elif language in ['javascript', 'typescript']:
+            return ast_parser.parse_javascript_symbols(file_content, file_path)
+        elif language == 'java':
+            return ast_parser.parse_java_symbols(file_content, file_path)
+        elif language == 'cpp':
+            return ast_parser.parse_cpp_symbols(file_content, file_path)
+        elif language == 'go':
+            return ast_parser.parse_go_symbols(file_content, file_path)
+        elif language == 'rust':
+            return ast_parser.parse_rust_symbols(file_content, file_path)
+        else:
+            return []
+
+# Global reference service instance
+reference_service = ReferenceService()
 
 
 --- File: C:\Shashank\SaaS\code-rag-debugger\backend\services\retrieval_service.py ---
@@ -1604,6 +2649,228 @@ __all__ = [
     "rag_service",
     "gemini_client"
 ]
+
+
+--- File: C:\Shashank\SaaS\code-rag-debugger\backend\utils\ast_parsers.py ---
+
+import tree_sitter
+from tree_sitter import Language, Parser
+from typing import List, Dict, Any, Optional
+import os
+import logging
+from pathlib import Path
+
+logger = logging.getLogger(__name__)
+
+# Tree-sitter language builds
+TREE_SITTER_LANGUAGES = {
+    'python': 'tree_sitter_languages/build/python.so',
+    'javascript': 'tree_sitter_languages/build/javascript.so',
+    'typescript': 'tree_sitter_languages/build/typescript.so',
+    'java': 'tree_sitter_languages/build/java.so',
+    'cpp': 'tree_sitter_languages/build/cpp.so',
+    'go': 'tree_sitter_languages/build/go.so',
+    'rust': 'tree_sitter_languages/build/rust.so'
+}
+
+class ASTParser:
+    def __init__(self):
+        self.parsers = {}
+        self._load_languages()
+
+    def _load_languages(self):
+        """Load tree-sitter language parsers"""
+        for lang, lib_path in TREE_SITTER_LANGUAGES.items():
+            try:
+                if os.path.exists(lib_path):
+                    language = Language(lib_path, lang)
+                    parser = Parser()
+                    parser.set_language(language)
+                    self.parsers[lang] = parser
+                    logger.info(f"Loaded parser for {lang}")
+                else:
+                    logger.warning(f"Tree-sitter library not found for {lang}: {lib_path}")
+            except Exception as e:
+                logger.error(f"Failed to load parser for {lang}: {e}")
+
+    def parse_python_symbols(self, file_content: str, file_path: str) -> List[Dict[str, Any]]:
+        """Parse Python file and extract symbols"""
+        return self._parse_symbols('python', file_content, file_path)
+
+    def parse_javascript_symbols(self, file_content: str, file_path: str) -> List[Dict[str, Any]]:
+        """Parse JavaScript file and extract symbols"""
+        return self._parse_symbols('javascript', file_content, file_path)
+
+    def parse_typescript_symbols(self, file_content: str, file_path: str) -> List[Dict[str, Any]]:
+        """Parse TypeScript file and extract symbols"""
+        return self._parse_symbols('typescript', file_content, file_path)
+
+    def parse_java_symbols(self, file_content: str, file_path: str) -> List[Dict[str, Any]]:
+        """Parse Java file and extract symbols"""
+        return self._parse_symbols('java', file_content, file_path)
+
+    def parse_cpp_symbols(self, file_content: str, file_path: str) -> List[Dict[str, Any]]:
+        """Parse C++ file and extract symbols"""
+        return self._parse_symbols('cpp', file_content, file_path)
+
+    def parse_go_symbols(self, file_content: str, file_path: str) -> List[Dict[str, Any]]:
+        """Parse Go file and extract symbols"""
+        return self._parse_symbols('go', file_content, file_path)
+
+    def parse_rust_symbols(self, file_content: str, file_path: str) -> List[Dict[str, Any]]:
+        """Parse Rust file and extract symbols"""
+        return self._parse_symbols('rust', file_content, file_path)
+
+    def _parse_symbols(self, language: str, file_content: str, file_path: str) -> List[Dict[str, Any]]:
+        """Generic symbol parsing method"""
+        if language not in self.parsers:
+            logger.warning(f"No parser available for {language}")
+            return []
+
+        try:
+            parser = self.parsers[language]
+            tree = parser.parse(bytes(file_content, 'utf8'))
+            root_node = tree.root_node
+
+            symbols = []
+            
+            # Language-specific extraction logic
+            if language == 'python':
+                symbols = self._extract_python_symbols(root_node, file_content)
+            elif language in ['javascript', 'typescript']:
+                symbols = self._extract_javascript_symbols(root_node, file_content)
+            elif language == 'java':
+                symbols = self._extract_java_symbols(root_node, file_content)
+            elif language == 'cpp':
+                symbols = self._extract_cpp_symbols(root_node, file_content)
+            elif language == 'go':
+                symbols = self._extract_go_symbols(root_node, file_content)
+            elif language == 'rust':
+                symbols = self._extract_rust_symbols(root_node, file_content)
+
+            # Add file path and language to each symbol
+            for symbol in symbols:
+                symbol['file_path'] = file_path
+                symbol['language'] = language
+
+            return symbols
+
+        except Exception as e:
+            logger.error(f"Failed to parse {language} file {file_path}: {e}")
+            return []
+
+    def _extract_python_symbols(self, root_node, file_content: str) -> List[Dict[str, Any]]:
+        """Extract symbols from Python code"""
+        symbols = []
+        
+        def traverse(node):
+            if node.type in ['function_definition', 'class_definition']:
+                # Get symbol name
+                name_node = node.child_by_field_name('name')
+                if name_node:
+                    symbol_name = file_content[name_node.start_byte:name_node.end_byte].decode('utf8')
+                    
+                    # Get signature/docstring
+                    signature = self._get_python_signature(node, file_content)
+                    docstring = self._get_python_docstring(node, file_content)
+                    
+                    symbols.append({
+                        'symbol_name': symbol_name,
+                        'symbol_type': 'function' if node.type == 'function_definition' else 'class',
+                        'start_line': node.start_point[0] + 1,
+                        'end_line': node.end_point[0] + 1,
+                        'signature': signature,
+                        'docstring': docstring,
+                        'code_snippet': file_content[node.start_byte:node.end_byte].decode('utf8')
+                    })
+            
+            # Traverse children
+            for child in node.children:
+                traverse(child)
+        
+        traverse(root_node)
+        return symbols
+
+    def _get_python_signature(self, node, file_content: str) -> str:
+        """Extract function/class signature"""
+        if node.type == 'function_definition':
+            # Get parameters
+            parameters_node = node.child_by_field_name('parameters')
+            if parameters_node:
+                return file_content[parameters_node.start_byte:parameters_node.end_byte].decode('utf8')
+        return ""
+
+    def _get_python_docstring(self, node, file_content: str) -> str:
+        """Extract docstring from Python node"""
+        # Look for string literal immediately after definition
+        for child in node.children:
+            if child.type == 'expression_statement':
+                string_node = child.child_by_field_name('value')
+                if string_node and string_node.type == 'string':
+                    return file_content[string_node.start_byte:string_node.end_byte].decode('utf8')
+        return ""
+
+    def _extract_javascript_symbols(self, root_node, file_content: str) -> List[Dict[str, Any]]:
+        """Extract symbols from JavaScript/TypeScript code"""
+        symbols = []
+        # Implementation for JS/TS symbol extraction
+        # This is a simplified version - would need more complex logic
+        def traverse(node):
+            if node.type in ['function_declaration', 'class_declaration', 'variable_declarator']:
+                name_node = node.child_by_field_name('name')
+                if name_node:
+                    symbol_name = file_content[name_node.start_byte:name_node.end_byte].decode('utf8')
+                    symbol_type = self._get_js_symbol_type(node.type)
+                    
+                    symbols.append({
+                        'symbol_name': symbol_name,
+                        'symbol_type': symbol_type,
+                        'start_line': node.start_point[0] + 1,
+                        'end_line': node.end_point[0] + 1,
+                        'code_snippet': file_content[node.start_byte:node.end_byte].decode('utf8')
+                    })
+            
+            for child in node.children:
+                traverse(child)
+        
+        traverse(root_node)
+        return symbols
+
+    def _get_js_symbol_type(self, node_type: str) -> str:
+        """Map JS node type to symbol type"""
+        type_map = {
+            'function_declaration': 'function',
+            'class_declaration': 'class',
+            'variable_declarator': 'variable'
+        }
+        return type_map.get(node_type, 'variable')
+
+    # Similar methods for other languages would be implemented here
+    def _extract_java_symbols(self, root_node, file_content: str) -> List[Dict[str, Any]]:
+        """Extract symbols from Java code"""
+        return []  # Placeholder
+
+    def _extract_cpp_symbols(self, root_node, file_content: str) -> List[Dict[str, Any]]:
+        """Extract symbols from C++ code"""
+        return []  # Placeholder
+
+    def _extract_go_symbols(self, root_node, file_content: str) -> List[Dict[str, Any]]:
+        """Extract symbols from Go code"""
+        return []  # Placeholder
+
+    def _extract_rust_symbols(self, root_node, file_content: str) -> List[Dict[str, Any]]:
+        """Extract symbols from Rust code"""
+        return []  # Placeholder
+
+    def find_enclosing_symbol_by_line(self, symbols: List[Dict[str, Any]], line: int) -> Optional[Dict[str, Any]]:
+        """Find the symbol that encloses the given line number"""
+        for symbol in symbols:
+            if symbol['start_line'] <= line <= symbol['end_line']:
+                return symbol
+        return None
+
+# Global parser instance
+ast_parser = ASTParser()
 
 
 --- File: C:\Shashank\SaaS\code-rag-debugger\backend\utils\chunking.py ---
@@ -1995,6 +3262,236 @@ def setup_json_logging(
     # Add to root logger
     logging.getLogger().addHandler(file_handler)
     logging.getLogger().setLevel(level)
+
+
+--- File: C:\Shashank\SaaS\code-rag-debugger\backend\utils\lsp_client.py ---
+
+import subprocess
+import json
+import logging
+from typing import List, Dict, Any, Optional
+from pathlib import Path
+
+logger = logging.getLogger(__name__)
+
+class LSPClient:
+    def __init__(self):
+        self.servers = {}
+        self.processes = {}
+
+    def start_lsp_server(self, language: str, project_root: str) -> bool:
+        """Start an LSP server for the given language"""
+        servers = {
+            'python': ['pylsp'],
+            'javascript': ['typescript-language-server', '--stdio'],
+            'typescript': ['typescript-language-server', '--stdio'],
+            'java': ['java', '-jar', 'path/to/eclipse.jdt.ls.jar'],
+            'cpp': ['clangd'],
+            'go': ['gopls'],
+            'rust': ['rust-analyzer']
+        }
+        
+        if language not in servers:
+            logger.warning(f"No LSP server configured for {language}")
+            return False
+        
+        try:
+            cmd = servers[language]
+            process = subprocess.Popen(
+                cmd,
+                stdin=subprocess.PIPE,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                cwd=project_root,
+                text=True,
+                bufsize=1
+            )
+            
+            self.processes[language] = process
+            self.servers[language] = {
+                'project_root': project_root,
+                'initialized': False
+            }
+            
+            # Initialize LSP server
+            self._initialize_server(language)
+            return True
+            
+        except Exception as e:
+            logger.error(f"Failed to start LSP server for {language}: {e}")
+            return False
+
+    def _initialize_server(self, language: str):
+        """Initialize LSP server with handshake"""
+        if language not in self.processes:
+            return
+        
+        try:
+            init_msg = {
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "initialize",
+                "params": {
+                    "processId": self.processes[language].pid,
+                    "rootUri": f"file://{self.servers[language]['project_root']}",
+                    "capabilities": {}
+                }
+            }
+            
+            self._send_message(language, init_msg)
+            response = self._receive_message(language)
+            
+            if response and 'result' in response:
+                self.servers[language]['initialized'] = True
+                logger.info(f"LSP server for {language} initialized successfully")
+                
+                # Send initialized notification
+                initialized_msg = {
+                    "jsonrpc": "2.0",
+                    "method": "initialized",
+                    "params": {}
+                }
+                self._send_message(language, initialized_msg)
+                
+        except Exception as e:
+            logger.error(f"Failed to initialize LSP server for {language}: {e}")
+
+    def find_references_via_lsp(self, project_root: str, file_path: str, line: int, column: int) -> List[Dict[str, Any]]:
+        """Find references using LSP"""
+        language = self._detect_language(file_path)
+        if not language or language not in self.processes:
+            logger.warning(f"No LSP server available for {file_path}")
+            return []
+        
+        if not self.servers[language]['initialized']:
+            if not self.start_lsp_server(language, project_root):
+                return []
+        
+        try:
+            # Open the document first
+            with open(Path(project_root) / file_path, 'r') as f:
+                content = f.read()
+            
+            open_msg = {
+                "jsonrpc": "2.0",
+                "method": "textDocument/didOpen",
+                "params": {
+                    "textDocument": {
+                        "uri": f"file://{Path(project_root) / file_path}",
+                        "languageId": language,
+                        "version": 1,
+                        "text": content
+                    }
+                }
+            }
+            self._send_message(language, open_msg)
+            
+            # Find references
+            ref_msg = {
+                "jsonrpc": "2.0",
+                "id": 2,
+                "method": "textDocument/references",
+                "params": {
+                    "textDocument": {
+                        "uri": f"file://{Path(project_root) / file_path}"
+                    },
+                    "position": {
+                        "line": line - 1,
+                        "character": column - 1
+                    },
+                    "context": {
+                        "includeDeclaration": True
+                    }
+                }
+            }
+            
+            self._send_message(language, ref_msg)
+            response = self._receive_message(language)
+            
+            references = []
+            if response and 'result' in response:
+                for ref in response['result']:
+                    references.append({
+                        'file_path': ref['uri'].replace('file://', ''),
+                        'line': ref['range']['start']['line'] + 1,
+                        'column': ref['range']['start']['character'] + 1
+                    })
+            
+            return references
+            
+        except Exception as e:
+            logger.error(f"Failed to find references via LSP: {e}")
+            return []
+
+    def _send_message(self, language: str, message: dict):
+        """Send message to LSP server"""
+        if language not in self.processes:
+            return
+        
+        content = json.dumps(message)
+        length = len(content)
+        header = f"Content-Length: {length}\r\n\r\n"
+        
+        self.processes[language].stdin.write(header + content)
+        self.processes[language].stdin.flush()
+
+    def _receive_message(self, language: str) -> Optional[dict]:
+        """Receive message from LSP server"""
+        if language not in self.processes:
+            return None
+        
+        # Read content length
+        line = self.processes[language].stdout.readline().strip()
+        if not line.startswith('Content-Length:'):
+            return None
+        
+        length = int(line.split(':')[1].strip())
+        
+        # Read empty line
+        self.processes[language].stdout.readline()
+        
+        # Read content
+        content = self.processes[language].stdout.read(length)
+        return json.loads(content)
+
+    def _detect_language(self, file_path: str) -> Optional[str]:
+        """Detect language from file extension"""
+        ext_map = {
+            '.py': 'python',
+            '.js': 'javascript',
+            '.ts': 'typescript',
+            '.java': 'java',
+            '.cpp': 'cpp', '.cc': 'cpp', '.cxx': 'cpp', '.h': 'cpp', '.hpp': 'cpp',
+            '.go': 'go',
+            '.rs': 'rust'
+        }
+        
+        ext = Path(file_path).suffix.lower()
+        return ext_map.get(ext)
+
+    def shutdown(self):
+        """Shutdown all LSP servers"""
+        for language, process in self.processes.items():
+            try:
+                # Send shutdown message
+                shutdown_msg = {
+                    "jsonrpc": "2.0",
+                    "id": 999,
+                    "method": "shutdown"
+                }
+                self._send_message(language, shutdown_msg)
+                
+                # Wait for exit
+                process.terminate()
+                process.wait(timeout=5)
+            except:
+                process.kill()
+        
+        self.processes = {}
+        self.servers = {}
+
+# Global LSP client instance
+lsp_client = LSPClient()
 
 
 --- File: C:\Shashank\SaaS\code-rag-debugger\backend\utils\__init__.py ---

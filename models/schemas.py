@@ -1,6 +1,7 @@
 from pydantic import BaseModel, HttpUrl
 from typing import List, Optional, Dict, Any
 from datetime import datetime
+from .symbol import Symbol, Reference, SymbolChunk, SymbolEmbeddingMetadata, IndexingJob, ReferencePack
 
 # Project schemas
 class ProjectBase(BaseModel):
@@ -44,6 +45,7 @@ class DebugQuery(BaseModel):
     file_path: Optional[str] = None
     additional_context: Optional[str] = None
     project_id: int
+    use_reference_pack: bool = True  # New parameter
 
 class DebugContext(BaseModel):
     commit: Optional[Commit] = None
@@ -86,3 +88,38 @@ class Feedback(FeedbackBase):
     
     class Config:
         from_attributes = True
+
+# Reference schemas - moved to avoid circular imports
+class DebugReferenceRequest(BaseModel):
+    project_id: int
+    error_snippet: str
+    file_path: str
+    start_line: Optional[int] = None
+    end_line: Optional[int] = None
+    token_budget: int = 4000
+    ranking_params: Optional[Dict[str, float]] = None
+
+# Forward references for symbol-related schemas
+class SymbolSearchResult(BaseModel):
+    symbol: 'Symbol'  # Forward reference
+    similarity: float
+    metadata: Dict[str, Any]
+
+class ReferenceWithSymbol(BaseModel):
+    reference: 'Reference'  # Forward reference
+    depth: int
+    symbol: 'Symbol'  # Forward reference
+    
+class ReferencePack(BaseModel):
+    symbol: Symbol
+    references: List[Reference]
+    ranking_params: Optional[Dict[str, float]] = None
+    token_budget: Optional[int] = None
+
+
+# Import symbol models here to avoid circular imports
+from .symbol import Symbol, Reference
+
+# Update the forward references with actual classes
+SymbolSearchResult.update_forward_refs()
+ReferenceWithSymbol.update_forward_refs()

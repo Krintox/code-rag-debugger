@@ -18,3 +18,4 @@ watchdog==3.0.0
 huggingface-hub==0.16.4
 supabase
 pinecone  # Changed from pinecone-client
+tree_sitter

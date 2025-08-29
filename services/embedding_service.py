@@ -157,4 +157,22 @@ class EmbeddingService:
         """Index code files for a project (to be implemented if needed)"""
         pass
 
+    # Add this method to the EmbeddingService class
+
+def upsert_symbol_embedding(self, namespace: str, chunk_id: int, embedding: List[float], metadata: Dict[str, Any]):
+    """Upsert a symbol embedding into Pinecone"""
+    try:
+        vector = {
+            "id": str(chunk_id),
+            "values": embedding,
+            "metadata": metadata
+        }
+        
+        self.index.upsert(vectors=[vector], namespace=namespace)
+        logger.info(f"Upserted symbol embedding {chunk_id} to namespace {namespace}")
+        
+    except Exception as e:
+        logger.error(f"Failed to upsert symbol embedding: {e}")
+        raise
+
 embedding_service = EmbeddingService()

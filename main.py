@@ -4,8 +4,7 @@ from contextlib import asynccontextmanager
 import logging
 
 from config import settings
-import models
-from routers import projects, debug, history
+from routers import projects, debug, history, references
 
 # Set up logging
 logging.basicConfig(level=logging.INFO)
@@ -37,6 +36,7 @@ app.add_middleware(
 app.include_router(projects.router)
 app.include_router(debug.router)
 app.include_router(history.router)
+app.include_router(references.router)
 
 @app.get("/")
 async def root():

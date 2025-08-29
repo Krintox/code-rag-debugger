@@ -23,7 +23,8 @@ def debug_code(query: schemas.DebugQuery):
         query.error_message,
         query.code_snippet,
         query.file_path,
-        query.additional_context
+        query.additional_context,
+        query.use_reference_pack
     )
     
     return result
