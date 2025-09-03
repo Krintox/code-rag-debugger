@@ -1,10 +1,11 @@
+# File: main.py (updated)
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from contextlib import asynccontextmanager
 import logging
 
 from config import settings
-from routers import projects, debug, history, references
+from routers import projects, debug, history, references, auth, profile
 
 # Set up logging
 logging.basicConfig(level=logging.INFO)
@@ -23,16 +24,18 @@ app = FastAPI(
     lifespan=lifespan
 )
 
-# FIXED CORS CONFIGURATION
+# CORS configuration
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["https://rodeceview.vercel.app", "http://localhost:3000"],  # Your React frontend URL
+    allow_origins=settings.BACKEND_CORS_ORIGINS,
     allow_credentials=True,
-    allow_methods=["*"],  # Allow all methods including OPTIONS
-    allow_headers=["*"],  # Allow all headers
+    allow_methods=["*"],
+    allow_headers=["*"],
 )
 
 # Include routers
+app.include_router(auth.router)
+app.include_router(profile.router)
 app.include_router(projects.router)
 app.include_router(debug.router)
 app.include_router(history.router)

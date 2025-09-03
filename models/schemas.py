@@ -2,6 +2,7 @@ from pydantic import BaseModel, HttpUrl
 from typing import List, Optional, Dict, Any
 from datetime import datetime
 from .symbol import Symbol, Reference, SymbolChunk, SymbolEmbeddingMetadata, IndexingJob, ReferencePack
+from models.user import User
 
 # Project schemas
 class ProjectBase(BaseModel):
@@ -115,6 +116,22 @@ class ReferencePack(BaseModel):
     references: List[Reference]
     ranking_params: Optional[Dict[str, float]] = None
     token_budget: Optional[int] = None
+
+class NotificationBase(BaseModel):
+    message: str
+    type: str = "info"  # could be "info", "warning", "error", etc.
+    read: bool = False
+
+class NotificationCreate(NotificationBase):
+    user_id: int
+
+class Notification(NotificationBase):
+    id: int
+    user_id: int
+    created_at: Optional[datetime] = None
+
+    class Config:
+        from_attributes = True
 
 
 # Import symbol models here to avoid circular imports
