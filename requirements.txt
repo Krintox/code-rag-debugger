@@ -19,3 +19,4 @@ huggingface-hub==0.16.4
 supabase
 pinecone  # Changed from pinecone-client
 tree_sitter
+email-validator
